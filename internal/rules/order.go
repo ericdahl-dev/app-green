@@ -11,11 +11,15 @@ import (
 )
 
 // Evaluate sets Stage and Flags on every chain, drops chains that have been
-// in prod longer than FadeAfter, and sorts: red, yellow, none; then furthest
+// in prod longer than FadeAfter and Done chains with nothing to ship (no PRs
+// once closed ones are ignored), and sorts: red, yellow, none; then furthest
 // stage first; then ticket key.
 func Evaluate(chains []model.Chain, now time.Time, th Thresholds) []model.Chain {
 	out := make([]model.Chain, 0, len(chains))
 	for _, c := range chains {
+		if c.Ticket.StatusCategory == model.StatusDone && nothingToShip(c) {
+			continue
+		}
 		c.Stage = Stage(c)
 		c.Flags = Flags(c, now, th)
 		if since, ok := prodSince(c); ok && c.Stage == model.StageInProd && c.Level() == model.None &&

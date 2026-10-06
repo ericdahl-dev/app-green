@@ -98,6 +98,11 @@ type PR struct {
 	// bottom's MergeSHA for a stacked PR, "" while the stack is unmerged.
 	EffectiveSHA string
 	StackPending bool // merged into a stack branch that has not reached DefaultBranch
+	// Stranded is set by link on a merged PR whose commits will never reach
+	// DefaultBranch: it merged into a branch whose own PR had already merged,
+	// or into a branch with no PR. A stranded PR is StackPending too. A PR
+	// whose base branch's PR is still open is waiting, not stranded.
+	Stranded bool
 }
 
 // Env is one deploy environment: a stage of a pipeline in an account.
@@ -233,6 +238,7 @@ type FlagKind int
 const (
 	FlagPipelineFailed FlagKind = iota
 	FlagRolledBack
+	FlagStranded // a merged PR whose commits will never reach the default branch
 	FlagUnhealthy
 	FlagCheckFailed
 	FlagChangesRequested
@@ -247,6 +253,7 @@ const (
 var flagKindNames = [...]string{
 	"pipeline failed",
 	"rolled back",
+	"stranded",
 	"unhealthy",
 	"check failed",
 	"changes requested",

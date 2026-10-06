@@ -137,10 +137,12 @@ func rank(s model.SlotState) int {
 // older exact success does not count when N does not contain the PR (a
 // rollback). Otherwise the newest non-success run that contains the PR decides
 // (failed, in progress, awaiting approval): exact SHA, or by compare for runs
-// newer than N. When N does not contain the PR but an older success carried
-// its exact SHA, the slot is RolledBack (Deploy and At are N's) unless a run
-// newer than N contains it. With no such run: Unknown if N's compare could not
-// answer, else NotYet.
+// newer than N. When N does not contain the PR but an older success did (its
+// exact SHA, or else, walking older successes newest to oldest, the first one
+// whose compare says Included: a batched deploy), the slot is RolledBack
+// (Deploy and At are N's) unless a run newer than N contains it. That walk
+// stops at the first compare that cannot answer. With no such run: Unknown if
+// N's compare or the walk could not answer, else NotYet.
 func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlot {
 	s := model.EnvSlot{Env: h.Env, SHA: p.EffectiveSHA}
 	// 1. The PR's oldest exact-SHA success, where liveSince stops.
@@ -173,6 +175,11 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 			// N is the newest success, so an exact success for the PR is older:
 			// it was live, and N replaced it.
 			rolledBack = firstExact != nil
+			if !rolledBack {
+				// It may have gone out inside a batch (an older success whose
+				// SHA contains it). The first answer from newest to oldest decides.
+				rolledBack, unknown = olderSuccessContains(h, p.Repo, ni, contains)
+			}
 		}
 	}
 	// 3. Not running now: the newest non-success run that contains the PR
@@ -216,6 +223,25 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 	}
 	s.State = model.SlotNotYet
 	return s
+}
+
+// olderSuccessContains walks the succeeded deploys older than index ni that
+// carry repo, newest to oldest, and stops at the first that contains the PR
+// (included) or whose compare cannot answer (unknown).
+func olderSuccessContains(h model.EnvHistory, repo string, ni int, contains func(*model.Deploy) model.Inclusion) (included, unknown bool) {
+	for i := ni + 1; i < len(h.Deploys); i++ {
+		d := &h.Deploys[i]
+		if d.Status != model.DeploySucceeded || revision(d.Revisions, repo) == "" {
+			continue
+		}
+		switch contains(d) {
+		case model.Included:
+			return true, false
+		case model.InclusionUnknown:
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // newestSuccess is the index of the newest succeeded deploy carrying repo, or -1.

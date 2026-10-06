@@ -35,7 +35,9 @@ func Link(tickets []model.Ticket, prs []model.PR, projects []string) ([]model.Ch
 // following BaseRef through other PRs' HeadRefs until it reaches the repo's
 // default branch. Closed PRs are not followed, and when two PRs share a head
 // branch the merged one is followed. A PR merged into a stack branch after
-// that branch's own PR merged is stranded: StackPending, no EffectiveSHA.
+// that branch's own PR merged, or into a branch with no live PR (none, or only
+// closed ones), is Stranded: StackPending too, no EffectiveSHA. A PR waiting
+// on an open base PR, or caught in a cycle, is StackPending only.
 func withEffectiveSHAs(prs []model.PR) []model.PR {
 	type rk struct{ repo, head string }
 	byHead := map[rk]model.PR{}
@@ -58,8 +60,12 @@ func withEffectiveSHAs(prs []model.PR) []model.PR {
 		cur, seen, stranded := p, map[int]bool{p.Number: true}, false
 		for cur.BaseRef != cur.DefaultBranch {
 			next, ok := byHead[rk{cur.Repo, cur.BaseRef}]
-			if !ok || seen[next.Number] {
-				break // base branch has no PR (or a cycle): treat as pending
+			if !ok {
+				stranded = true // base branch has no live PR: nothing brings it to main
+				break
+			}
+			if seen[next.Number] {
+				break // a cycle: treat as pending
 			}
 			if cur.State == model.PRMerged && next.State == model.PRMerged &&
 				!cur.MergedAt.IsZero() && !next.MergedAt.IsZero() && cur.MergedAt.After(next.MergedAt) {
@@ -74,6 +80,7 @@ func withEffectiveSHAs(prs []model.PR) []model.PR {
 			out[i].EffectiveSHA = cur.MergeSHA
 		default:
 			out[i].StackPending = true
+			out[i].Stranded = stranded
 		}
 	}
 	return out

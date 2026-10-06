@@ -104,3 +104,12 @@ func TestFlagPartialProdFollowsAwaitingApproval(t *testing.T) {
 		t.Errorf("FlagPartialProd = %d %q, want right after FlagAwaitingApproval, labeled %q", model.FlagPartialProd, model.FlagPartialProd, "partial prod")
 	}
 }
+
+func TestFlagStrandedFollowsRolledBack(t *testing.T) {
+	if model.FlagStranded != model.FlagRolledBack+1 || model.FlagStranded.String() != "stranded" {
+		t.Errorf("FlagStranded = %d %q, want right after FlagRolledBack, labeled %q", model.FlagStranded, model.FlagStranded, "stranded")
+	}
+	if model.FlagDeployUnknown.String() != "deploy unknown" {
+		t.Errorf("labels shifted: FlagDeployUnknown.String() = %q", model.FlagDeployUnknown)
+	}
+}

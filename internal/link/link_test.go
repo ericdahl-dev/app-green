@@ -70,9 +70,9 @@ func TestLinkStackNotYetOnMain(t *testing.T) {
 
 func TestLinkStackEdgeCases(t *testing.T) {
 	prs := []model.PR{
-		// Base branch has no PR: pending.
+		// Base branch has no PR: pending and stranded.
 		pr(1, "ABC-7: orphan", "o1", "gone", model.PRMerged, "eeee555"),
-		// Cycle between two stack branches: pending, and it terminates.
+		// Cycle between two stack branches: pending (not stranded), and it terminates.
 		pr(2, "ABC-7: loop a", "la", "lb", model.PRMerged, "ffff666"),
 		pr(3, "ABC-7: loop b", "lb", "la", model.PRMerged, "ffff666"),
 		// Open PR: neither set.
@@ -80,9 +80,9 @@ func TestLinkStackEdgeCases(t *testing.T) {
 	}
 	chains, _ := link.Link([]model.Ticket{{Key: "ABC-7"}}, prs, []string{"ABC"})
 	for _, p := range chains[0].PRs {
-		wantPending := p.State == model.PRMerged
-		if p.EffectiveSHA != "" || p.StackPending != wantPending {
-			t.Errorf("#%d EffectiveSHA=%q pending=%v, want \"\"/%v", p.Number, p.EffectiveSHA, p.StackPending, wantPending)
+		wantPending, wantStranded := p.State == model.PRMerged, p.Number == 1
+		if p.EffectiveSHA != "" || p.StackPending != wantPending || p.Stranded != wantStranded {
+			t.Errorf("#%d EffectiveSHA=%q pending=%v stranded=%v, want \"\"/%v/%v", p.Number, p.EffectiveSHA, p.StackPending, p.Stranded, wantPending, wantStranded)
 		}
 	}
 }
@@ -118,13 +118,14 @@ func TestLinkSharedHeadIgnoresClosed(t *testing.T) {
 func TestLinkMergedIntoStackAfterBaseMerged(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name        string
-		twoAt       time.Time
-		wantSHA     string
-		wantPending bool
+		name         string
+		twoAt        time.Time
+		wantSHA      string
+		wantPending  bool
+		wantStranded bool
 	}{
-		{"normal order", t0, "aaaa111", false},
-		{"stranded after base merged", t0.Add(2 * time.Hour), "", true},
+		{"normal order", t0, "aaaa111", false, false},
+		{"stranded after base merged", t0.Add(2 * time.Hour), "", true, true},
 	}
 	for _, c := range cases {
 		one := pr(1, "ABC-9: a", "s1", "main", model.PRMerged, "aaaa111")
@@ -133,9 +134,29 @@ func TestLinkMergedIntoStackAfterBaseMerged(t *testing.T) {
 		two.MergedAt = c.twoAt
 		chains, _ := link.Link([]model.Ticket{{Key: "ABC-9"}}, []model.PR{two, one}, []string{"ABC"})
 		got := chains[0].PRs[0]
-		if got.Number != 2 || got.EffectiveSHA != c.wantSHA || got.StackPending != c.wantPending {
-			t.Errorf("%s: #%d EffectiveSHA=%q pending=%v, want %q/%v",
-				c.name, got.Number, got.EffectiveSHA, got.StackPending, c.wantSHA, c.wantPending)
+		if got.Number != 2 || got.EffectiveSHA != c.wantSHA || got.StackPending != c.wantPending || got.Stranded != c.wantStranded {
+			t.Errorf("%s: #%d EffectiveSHA=%q pending=%v stranded=%v, want %q/%v/%v",
+				c.name, got.Number, got.EffectiveSHA, got.StackPending, got.Stranded, c.wantSHA, c.wantPending, c.wantStranded)
 		}
+	}
+}
+
+func TestLinkStrandedWhenBaseBranchHasNoPR(t *testing.T) {
+	// #1 merged into "gone", which no PR (open or merged) will ever bring to main.
+	prs := []model.PR{pr(1, "ABC-10: a", "o1", "gone", model.PRMerged, "eeee555")}
+	chains, _ := link.Link([]model.Ticket{{Key: "ABC-10"}}, prs, []string{"ABC"})
+	if got := chains[0].PRs[0]; !got.Stranded || !got.StackPending || got.EffectiveSHA != "" {
+		t.Errorf("#1 = %+v, want stranded and pending with no EffectiveSHA", got)
+	}
+}
+
+func TestLinkWaitingOnOpenBaseIsNotStranded(t *testing.T) {
+	prs := []model.PR{
+		pr(2, "ABC-11: b", "s2", "s1", model.PRMerged, "dddd444"),
+		pr(1, "ABC-11: a", "s1", "main", model.PROpen, ""),
+	}
+	chains, _ := link.Link([]model.Ticket{{Key: "ABC-11"}}, prs, []string{"ABC"})
+	if got := chains[0].PRs[0]; got.Number != 2 || got.Stranded || !got.StackPending {
+		t.Errorf("#2 = %+v, want pending but not stranded: its base PR is still open", got)
 	}
 }

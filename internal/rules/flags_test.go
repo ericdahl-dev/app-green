@@ -22,6 +22,7 @@ func kinds(fs []model.Flag) []model.FlagKind {
 func TestFlags(t *testing.T) {
 	th := rules.Thresholds{StaleReview: 48 * time.Hour, DoneGrace: 2 * time.Hour}
 	failing := model.PR{State: model.PROpen, Checks: model.ChecksFailing, Failing: []model.Check{{Name: "rspec", RunID: 9}}}
+	shipped := []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}}
 	scanning := model.PR{State: model.PROpen, Checks: model.ChecksFailing, Failing: []model.Check{{Name: "CodeQL", CodeScanning: true}}}
 	cases := []struct {
 		name string
@@ -52,12 +53,12 @@ func TestFlags(t *testing.T) {
 			PRs: []model.PR{{State: model.PRMerged}}}, []model.FlagKind{model.FlagStatusMismatch}},
 		{"Jira still To Do after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusToDo, Status: "Backlog"}, Stage: model.StageMerged,
 			PRs: []model.PR{{State: model.PRMerged}}}, []model.FlagKind{model.FlagStatusMismatch}},
-		{"Done but not in prod within DoneGrace is not flagged yet", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-time.Hour)}, Stage: model.StageInTest}, nil},
-		{"Done but not in prod past DoneGrace is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
+		{"Done but not in prod within DoneGrace is not flagged yet", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-time.Hour)}, Stage: model.StageInTest, PRs: shipped}, nil},
+		{"Done but not in prod past DoneGrace is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-3 * time.Hour)}, Stage: model.StageInTest, PRs: shipped},
 			[]model.FlagKind{model.FlagStatusMismatch}},
-		{"Done with no status time falls back to the ticket's last update", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, Updated: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
+		{"Done with no status time falls back to the ticket's last update", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, Updated: now.Add(-3 * time.Hour)}, Stage: model.StageInTest, PRs: shipped},
 			[]model.FlagKind{model.FlagStatusMismatch}},
-		{"Done with neither a status time nor an update time is not flagged", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone}, Stage: model.StageInTest}, nil},
+		{"Done with neither a status time nor an update time is not flagged", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone}, Stage: model.StageInTest, PRs: shipped}, nil},
 		{"red flags come before yellow ones", model.Chain{PRs: []model.PR{failing},
 			Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}},
 			[]model.FlagKind{model.FlagCheckFailed, model.FlagAwaitingApproval}},
@@ -191,5 +192,19 @@ func TestZeroDoneGraceDisablesTheDoneMismatch(t *testing.T) {
 		PRs: []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}}}
 	if fs := rules.Flags(c, now, rules.Thresholds{}); len(fs) != 0 {
 		t.Errorf("flags %v, want none: DoneGrace 0 turns the check off, like the other thresholds", kinds(fs))
+	}
+}
+
+func TestStrandedPRFlagTargetsItsPRAtRed(t *testing.T) {
+	c := model.Chain{Stage: model.StageMerged, PRs: []model.PR{
+		{Repo: "acme/app", Number: 3, State: model.PRMerged, StackPending: true, Stranded: true},
+		{Repo: "acme/app", Number: 4, State: model.PRMerged, StackPending: true}, // waiting, not stranded
+	}}
+	fs := rules.Flags(c, now, rules.Thresholds{})
+	if len(fs) != 1 {
+		t.Fatalf("flags %v, want one stranded flag", kinds(fs))
+	}
+	if f := fs[0]; f.Kind != model.FlagStranded || f.Level != model.Red || f.PR == nil || f.PR.Number != 3 || f.Reason != "PR #3 merged into a dead branch" {
+		t.Errorf("flag %+v, want red stranded on PR #3 with reason %q", f, "PR #3 merged into a dead branch")
 	}
 }

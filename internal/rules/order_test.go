@@ -202,3 +202,20 @@ func TestUnclaimedRepoCheckNeedsConfiguredRepos(t *testing.T) {
 		t.Errorf("rows %s, want ABC-1 with no flags in history-fallback mode", describe(rows))
 	}
 }
+
+func TestEvaluateDropsDoneTicketsWithNoPRs(t *testing.T) {
+	// Done with nothing to ship (no PRs, or only closed ones): no mismatch, no row.
+	// A To Do ticket with no PRs stays.
+	th := rules.Thresholds{DoneGrace: time.Hour}
+	done := model.Chain{Ticket: model.Ticket{Key: "ABC-1", StatusCategory: model.StatusDone, StatusSince: now.Add(-30 * 24 * time.Hour)}}
+	closedOnly := done
+	closedOnly.Ticket.Key, closedOnly.PRs = "ABC-2", []model.PR{{State: model.PRClosed}}
+	todo := model.Chain{Ticket: model.Ticket{Key: "ABC-3", StatusCategory: model.StatusToDo}}
+	if fs := rules.Flags(done, now, th); len(fs) != 0 {
+		t.Errorf("flags %v, want none for a Done ticket with no PRs", kinds(fs))
+	}
+	rows := rules.Evaluate([]model.Chain{done, closedOnly, todo}, now, th)
+	if got := keysOf(rows); fmt.Sprint(got) != "[ABC-3]" {
+		t.Errorf("rows %s, want only ABC-3", describe(rows))
+	}
+}

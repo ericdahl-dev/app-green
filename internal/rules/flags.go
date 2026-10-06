@@ -55,6 +55,9 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 	}
 	for i := range c.PRs {
 		p := &c.PRs[i]
+		if p.State == model.PRMerged && p.Stranded {
+			add(model.Red, model.FlagStranded, fmt.Sprintf("PR #%d merged into a dead branch", p.Number), p, nil)
+		}
 		if p.State != model.PROpen {
 			continue
 		}
@@ -161,11 +164,21 @@ func statusMismatch(c model.Chain, now time.Time, th Thresholds) string {
 	switch {
 	case (c.Ticket.StatusCategory == model.StatusInProgress || c.Ticket.StatusCategory == model.StatusToDo) && c.Stage >= model.StageMerged:
 		return "Jira still " + orDefault(c.Ticket.Status, c.Ticket.StatusCategory.Label()) + ", PR merged"
-	case c.Ticket.StatusCategory == model.StatusDone && c.Stage != model.StageInProd && th.DoneGrace > 0 &&
+	case c.Ticket.StatusCategory == model.StatusDone && c.Stage != model.StageInProd && th.DoneGrace > 0 && !nothingToShip(c) &&
 		!since.IsZero() && now.Sub(since) > th.DoneGrace:
 		return "Jira Done, not in prod"
 	}
 	return ""
+}
+
+// nothingToShip reports whether c has no PRs once closed ones are ignored.
+func nothingToShip(c model.Chain) bool {
+	for _, p := range c.PRs {
+		if p.State != model.PRClosed {
+			return false
+		}
+	}
+	return true
 }
 
 func checkNames(cs []model.Check) string {

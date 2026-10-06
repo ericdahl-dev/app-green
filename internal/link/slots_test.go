@@ -492,3 +492,52 @@ func TestSlotEmptySHAIsNotCarried(t *testing.T) {
 		t.Errorf("slot = %+v, want Applies true and unknown: an empty SHA does not carry the repo", s)
 	}
 }
+
+func TestSlotBatchedRollbackIsRolledBack(t *testing.T) {
+	// aaaa never deployed by its own SHA: it went out inside bbbb at t-2h, and
+	// then zzzz, which does not contain it, replaced bbbb at t0.
+	h := model.EnvHistory{Env: prod, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "bbbb", t0.Add(-2*time.Hour)),
+	}}
+	calls := 0
+	cmp := func(_, base, head string) model.Inclusion {
+		calls++
+		switch {
+		case base == "aaaa" && head == "zzzz":
+			return model.NotIncluded
+		case base == "aaaa" && head == "bbbb":
+			return model.Included
+		}
+		t.Fatalf("unexpected compare %s...%s", base, head)
+		return model.InclusionUnknown
+	}
+	s := link.Slot([]model.PR{merged("aaaa")}, h, cmp)
+	if s.State != model.SlotRolledBack || s.SHA != "zzzz" || !s.At.Equal(t0) {
+		t.Errorf("slot = %+v, want rolled back by zzzz at t0: aaaa was live inside bbbb", s)
+	}
+	if calls != 2 {
+		t.Errorf("compare calls = %d, want 2 (aaaa vs zzzz, then aaaa vs bbbb)", calls)
+	}
+}
+
+func TestSlotBatchedRollbackWalkStopsAtUnknown(t *testing.T) {
+	// zzzz does not contain aaaa; bbbb's compare cannot answer, so the walk
+	// stops there and never reaches cccc.
+	h := model.EnvHistory{Env: prod, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "bbbb", t0.Add(-2*time.Hour)),
+		dep(model.DeploySucceeded, "cccc", t0.Add(-3*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		switch {
+		case base == "aaaa" && head == "zzzz":
+			return model.NotIncluded
+		case base == "aaaa" && head == "bbbb":
+			return model.InclusionUnknown
+		}
+		t.Fatalf("unexpected compare %s...%s", base, head)
+		return model.InclusionUnknown
+	}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotUnknown {
+		t.Errorf("slot = %+v, want unknown", s)
+	}
+}
