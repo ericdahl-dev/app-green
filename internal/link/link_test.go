@@ -2,6 +2,7 @@ package link_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ericdahl-dev/app-green/internal/link"
 	"github.com/ericdahl-dev/app-green/internal/model"
@@ -31,7 +32,7 @@ func TestLinkGroupsPRsByKey(t *testing.T) {
 	}
 }
 
-func TestLinkKeyWithoutTicketIsUnlinked(t *testing.T) {
+func TestLinkKeyWithoutTicketIsDropped(t *testing.T) {
 	// The PR names a key that is not one of my tickets (someone else's, or Done long ago).
 	chains, unlinked := link.Link(nil, []model.PR{pr(5, "ABC-99: x", "abc-99", "main", model.PROpen, "")}, []string{"ABC"})
 	if len(chains) != 0 || len(unlinked) != 0 {
@@ -82,6 +83,59 @@ func TestLinkStackEdgeCases(t *testing.T) {
 		wantPending := p.State == model.PRMerged
 		if p.EffectiveSHA != "" || p.StackPending != wantPending {
 			t.Errorf("#%d EffectiveSHA=%q pending=%v, want \"\"/%v", p.Number, p.EffectiveSHA, p.StackPending, wantPending)
+		}
+	}
+}
+
+func TestLinkSharedHeadPrefersMerged(t *testing.T) {
+	// Head "s1" has #1 merged into main and #9 open (reopened on the same branch).
+	one := pr(1, "ABC-8: a", "s1", "main", model.PRMerged, "aaaa111")
+	nine := pr(9, "ABC-8: a again", "s1", "main", model.PROpen, "")
+	two := pr(2, "ABC-8: b", "s2", "s1", model.PRMerged, "bbbb222")
+	for _, prs := range [][]model.PR{{one, nine, two}, {nine, one, two}, {two, nine, one}} {
+		chains, _ := link.Link([]model.Ticket{{Key: "ABC-8"}}, prs, []string{"ABC"})
+		for _, p := range chains[0].PRs {
+			if p.Number == 2 && (p.EffectiveSHA != "aaaa111" || p.StackPending) {
+				t.Errorf("order %d,%d,%d: #2 EffectiveSHA=%q pending=%v, want aaaa111/false",
+					prs[0].Number, prs[1].Number, prs[2].Number, p.EffectiveSHA, p.StackPending)
+			}
+		}
+	}
+}
+
+func TestLinkSharedHeadIgnoresClosed(t *testing.T) {
+	one := pr(1, "ABC-8: a", "s1", "main", model.PRMerged, "aaaa111")
+	closed := pr(9, "ABC-8: a old", "s1", "main", model.PRClosed, "")
+	two := pr(2, "ABC-8: b", "s2", "s1", model.PRMerged, "bbbb222")
+	chains, _ := link.Link([]model.Ticket{{Key: "ABC-8"}}, []model.PR{one, two, closed}, []string{"ABC"})
+	for _, p := range chains[0].PRs {
+		if p.Number == 2 && (p.EffectiveSHA != "aaaa111" || p.StackPending) {
+			t.Errorf("#2 EffectiveSHA=%q pending=%v, want aaaa111/false", p.EffectiveSHA, p.StackPending)
+		}
+	}
+}
+
+func TestLinkMergedIntoStackAfterBaseMerged(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name        string
+		twoAt       time.Time
+		wantSHA     string
+		wantPending bool
+	}{
+		{"normal order", t0, "aaaa111", false},
+		{"stranded after base merged", t0.Add(2 * time.Hour), "", true},
+	}
+	for _, c := range cases {
+		one := pr(1, "ABC-9: a", "s1", "main", model.PRMerged, "aaaa111")
+		one.MergedAt = t0.Add(time.Hour)
+		two := pr(2, "ABC-9: b", "s2", "s1", model.PRMerged, "bbbb222")
+		two.MergedAt = c.twoAt
+		chains, _ := link.Link([]model.Ticket{{Key: "ABC-9"}}, []model.PR{two, one}, []string{"ABC"})
+		got := chains[0].PRs[0]
+		if got.Number != 2 || got.EffectiveSHA != c.wantSHA || got.StackPending != c.wantPending {
+			t.Errorf("%s: #%d EffectiveSHA=%q pending=%v, want %q/%v",
+				c.name, got.Number, got.EffectiveSHA, got.StackPending, c.wantSHA, c.wantPending)
 		}
 	}
 }
