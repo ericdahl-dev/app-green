@@ -57,6 +57,8 @@ const (
 	ChecksPending ChecksState = "PENDING"
 	ChecksPassing ChecksState = "SUCCESS"
 	ChecksFailing ChecksState = "FAILURE"
+	// ChecksExpected: a required check has not reported yet. Not a failure.
+	ChecksExpected ChecksState = "EXPECTED"
 )
 
 type ReviewState string
@@ -246,7 +248,8 @@ const (
 	FlagCheckFailed
 	FlagChangesRequested
 	FlagAwaitingApproval
-	FlagPartialProd // live in some prod Envs, not all, for too long
+	FlagPartialProd   // live in some prod Envs, not all, for too long
+	FlagCheckExpected // an open PR waits on a required check that has not reported
 	FlagReadyToMerge
 	FlagStaleReview
 	FlagStatusMismatch
@@ -262,6 +265,7 @@ var flagKindNames = [...]string{
 	"changes requested",
 	"awaiting approval",
 	"partial prod",
+	"check expected",
 	"ready to merge",
 	"stale review",
 	"status mismatch",

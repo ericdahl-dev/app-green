@@ -67,6 +67,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Red, model.FlagCheckFailed, fmt.Sprintf("PR #%d %s failing", p.Number, checkNames(p.Failing)), p, nil)
 		case p.Review == model.ReviewChangesRequested:
 			add(model.Red, model.FlagChangesRequested, fmt.Sprintf("PR #%d changes requested", p.Number), p, nil)
+		case p.Checks == model.ChecksExpected:
+			add(model.Yellow, model.FlagCheckExpected, fmt.Sprintf("PR #%d waiting on a required check", p.Number), p, nil)
 		case p.IsDraft:
 			// A draft is not asking for review yet: no ready-to-merge, no-reviewer
 			// or stale-review flag. The red flags above still apply.
@@ -209,11 +211,12 @@ func orDefault(s, d string) string {
 	return s
 }
 
-// checksFailing treats every state other than passing, pending or none as a
-// failure: GitHub also sends ERROR and EXPECTED, and neither is green.
+// checksFailing treats every state other than passing, pending, expected or
+// none as a failure: GitHub also sends ERROR, which is not green. EXPECTED (a
+// required check has not reported) is a wait, flagged yellow on its own.
 func checksFailing(s model.ChecksState) bool {
 	switch s {
-	case model.ChecksPassing, model.ChecksPending, model.ChecksNone:
+	case model.ChecksPassing, model.ChecksPending, model.ChecksExpected, model.ChecksNone:
 		return false
 	}
 	return true

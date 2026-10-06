@@ -147,9 +147,9 @@ func (n prNode) toPR(repo repoInfo) model.PR {
 	}
 	if len(n.Commits.Nodes) > 0 {
 		if r := n.Commits.Nodes[len(n.Commits.Nodes)-1].Commit.StatusCheckRollup; r != nil {
-			// GitHub's rollup state passes straight through: rules treats
-			// anything but SUCCESS, PENDING or none (ERROR, EXPECTED, FAILURE)
-			// as failing.
+			// GitHub's rollup state passes straight through: rules flags
+			// EXPECTED yellow and anything but SUCCESS, PENDING or none
+			// (ERROR, FAILURE) red.
 			p.Checks = model.ChecksState(r.State)
 			for _, c := range r.Contexts.Nodes {
 				if chk, ok := c.failing(); ok {

@@ -32,8 +32,10 @@ func TestFlags(t *testing.T) {
 		{"an open PR with checks running and a reviewer needs nothing", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPending, Reviewers: 1, OpenedAt: now}}}, nil},
 		{"a failing check flags the PR", model.Chain{PRs: []model.PR{failing}}, []model.FlagKind{model.FlagCheckFailed}},
 		{"a failing code scan flags the PR like any check", model.Chain{PRs: []model.PR{scanning}}, []model.FlagKind{model.FlagCheckFailed}},
-		{"checks in any other state (EXPECTED, ERROR) count as failing, even when approved", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: "EXPECTED", Review: model.ReviewApproved, Reviewers: 1}}},
+		{"checks in any other state (ERROR) count as failing, even when approved", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: "ERROR", Review: model.ReviewApproved, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagCheckFailed}},
+		{"a required check that has not reported is a yellow wait, not a failure", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksExpected, Review: model.ReviewApproved, Reviewers: 1}}},
+			[]model.FlagKind{model.FlagCheckExpected}},
 		{"requested changes flag the PR", model.Chain{PRs: []model.PR{{State: model.PROpen, Review: model.ReviewChangesRequested, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagChangesRequested}},
 		{"an approved, green PR that is not merged is ready to merge", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1}}},
@@ -232,5 +234,22 @@ func TestDraftPRsSkipReviewFlags(t *testing.T) {
 				t.Errorf("flags %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckExpectedFlagIsYellowWithItsOwnReason(t *testing.T) {
+	c := model.Chain{Stage: model.StagePROpen, PRs: []model.PR{{Number: 7, State: model.PROpen, Checks: model.ChecksExpected, OpenedAt: now}}}
+	fs := rules.Flags(c, now, rules.Thresholds{})
+	if len(fs) != 1 {
+		t.Fatalf("flags %v, want one", kinds(fs))
+	}
+	if f := fs[0]; f.Kind != model.FlagCheckExpected || f.Level != model.Yellow || f.PR == nil || f.Reason != "PR #7 waiting on a required check" {
+		t.Errorf("flag %+v, want yellow check expected on PR #7", f)
+	}
+}
+
+func TestCheckExpectedSortsAfterPartialProdBeforeReadyToMerge(t *testing.T) {
+	if model.FlagCheckExpected <= model.FlagPartialProd || model.FlagCheckExpected >= model.FlagReadyToMerge {
+		t.Errorf("FlagCheckExpected = %d, want between FlagPartialProd and FlagReadyToMerge", model.FlagCheckExpected)
 	}
 }
