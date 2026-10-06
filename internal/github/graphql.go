@@ -48,14 +48,14 @@ func (c *Client) graphql(ctx context.Context, query string, vars map[string]any,
 
 // graphqlRateLimit builds the 429 for a RATE_LIMITED GraphQL error.
 func (c *Client) graphqlRateLimit(data json.RawMessage, msg string) *APIError {
-	retry := defaultRetryAfter
+	var d time.Duration
 	var rl struct {
 		RateLimit *struct {
 			ResetAt time.Time `json:"resetAt"`
 		} `json:"rateLimit"`
 	}
 	if json.Unmarshal(data, &rl) == nil && rl.RateLimit != nil && !rl.RateLimit.ResetAt.IsZero() {
-		retry = min(max(rl.RateLimit.ResetAt.Sub(c.now()), 0), maxRetryAfter)
+		d = rl.RateLimit.ResetAt.Sub(c.now())
 	}
-	return &APIError{Status: http.StatusTooManyRequests, Message: msg, RetryAfter: retry}
+	return &APIError{Status: http.StatusTooManyRequests, Message: msg, RetryAfter: backoff(true, d)}
 }

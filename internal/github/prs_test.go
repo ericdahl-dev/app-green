@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -257,6 +258,8 @@ func TestGraphQLRateLimitIsA429(t *testing.T) {
 		{"no data backs off a minute", `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, time.Minute, time.Minute},
 		{"rateLimit.resetAt sets the backoff", `{"data":{"rateLimit":{"resetAt":"` + reset + `"},"repository":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
 			4 * time.Minute, 5 * time.Minute},
+		{"a past rateLimit.resetAt backs off a minute", `{"data":{"rateLimit":{"resetAt":"2020-01-01T00:00:00Z"},"repository":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+			time.Minute, time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,5 +285,58 @@ func TestGraphQLRateLimitIsA429(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRecentPRsWarnsWhenItStopsAtThePageCap(t *testing.T) {
+	calls := 0
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		decodeGQL(t, r)
+		calls++
+		_ = json.NewEncoder(w).Encode(page(true, fmt.Sprintf("p%d", calls), map[string]any{"number": calls, "createdAt": "2026-09-20T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z"}))
+	})
+	prs, warns, err := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since)
+	if err != nil || calls != 20 || len(prs) != 20 {
+		t.Fatalf("err %v, calls %d, prs %d; want 20 pages", err, calls, len(prs))
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "20 pages") {
+		t.Errorf("warnings = %q, want one about stopping at 20 pages", warns)
+	}
+}
+
+func TestRecentPRsSkipsForkPRs(t *testing.T) {
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		decodeGQL(t, r)
+		_ = json.NewEncoder(w).Encode(page(false, "",
+			map[string]any{"number": 2, "headRefName": "s1", "createdAt": "2026-09-20T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z", "isCrossRepository": true},
+			map[string]any{"number": 3, "headRefName": "abc-3", "createdAt": "2026-09-20T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z"}))
+	})
+	prs, _, err := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since)
+	if err != nil || len(prs) != 1 || prs[0].Number != 3 {
+		t.Errorf("prs = %+v, err %v; want only #3 (#2 is from a fork)", prs, err)
+	}
+}
+
+func TestRecentPRsWarnsOncePerPRWithMoreThan50Checks(t *testing.T) {
+	more := map[string]any{"commits": map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": map[string]any{
+		"state": "SUCCESS", "contexts": map[string]any{"pageInfo": map[string]any{"hasNextPage": true}, "nodes": []any{}}}}}}},
+		"createdAt": "2026-09-20T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z"}
+	calls := 0
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		decodeGQL(t, r)
+		calls++
+		n := map[string]any{"number": 4}
+		for k, v := range more {
+			n[k] = v
+		}
+		// the same PR on both pages, as can happen when it updates mid-paging
+		_ = json.NewEncoder(w).Encode(page(calls == 1, "p1", n))
+	})
+	_, warns, err := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since)
+	if err != nil || calls != 2 {
+		t.Fatalf("err %v, calls %d", err, calls)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "acme/app#4") || !strings.Contains(warns[0], "50") {
+		t.Errorf("warnings = %q, want one for acme/app#4 about 50 checks", warns)
 	}
 }

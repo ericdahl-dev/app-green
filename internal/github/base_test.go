@@ -128,3 +128,51 @@ func TestBasePRsKeepALaterStackPRFromLookingStranded(t *testing.T) {
 		t.Errorf("#2 = %+v, want carried to main by #1's merge aaaa111", p)
 	}
 }
+
+func TestBasePRsWarnsWhenItStopsAtTheRoundCap(t *testing.T) {
+	// s1's PR is on s2, s2's on s3, and so on: deeper than five rounds.
+	rounds := 0
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		req := decodeGQL(t, r)
+		rounds++
+		repo := map[string]any{"nameWithOwner": "acme/app", "defaultBranchRef": map[string]any{"name": "main"}}
+		b := req.Variables["b0"].(string)
+		var n int
+		_, _ = fmt.Sscanf(b, "s%d", &n)
+		repo["b0"] = map[string]any{"nodes": []any{baseNode(100+n, b, fmt.Sprintf("s%d", n+1), "other", false)}}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": repo}})
+	})
+	mine := []model.PR{{Repo: "acme/app", DefaultBranch: "main", Number: 1, HeadRef: "abc-1", BaseRef: "s1", State: model.PROpen}}
+	got, warns, err := c.BasePRs(context.Background(), "acme", "app", mine)
+	if err != nil || rounds != 5 || len(got) != 5 {
+		t.Fatalf("err %v, rounds %d, got %d; want 5", err, rounds, len(got))
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "s6") {
+		t.Errorf("warnings = %q, want one naming the unfetched base s6", warns)
+	}
+}
+
+func TestBasePRsAsksAtMost20BranchesPerQuery(t *testing.T) {
+	var sizes []int
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		req := decodeGQL(t, r)
+		sizes = append(sizes, len(req.Variables)-2)
+		repo := map[string]any{"nameWithOwner": "acme/app", "defaultBranchRef": map[string]any{"name": "main"}}
+		for i := range len(req.Variables) - 2 {
+			b := req.Variables[fmt.Sprintf("b%d", i)].(string)
+			repo[fmt.Sprintf("b%d", i)] = map[string]any{"nodes": []any{baseNode(1000+len(sizes)*100+i, b, "main", "other", false)}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": repo}})
+	})
+	var mine []model.PR
+	for i := range 25 {
+		mine = append(mine, model.PR{Repo: "acme/app", DefaultBranch: "main", Number: i + 1, HeadRef: fmt.Sprintf("abc-%d", i), BaseRef: fmt.Sprintf("s%d", i), State: model.PROpen})
+	}
+	got, _, err := c.BasePRs(context.Background(), "acme", "app", mine)
+	if err != nil || len(got) != 25 {
+		t.Fatalf("err %v, got %d; want 25", err, len(got))
+	}
+	if fmt.Sprint(sizes) != "[20 5]" {
+		t.Errorf("branches per query = %v, want [20 5]", sizes)
+	}
+}

@@ -1,5 +1,6 @@
 // Copied from git-green internal/github/etag.go (2026-10-06); Pool, fromCache and
-// maxCachedResponses dropped, cache header renamed.
+// maxCachedResponses dropped, cache header renamed, bodies over
+// maxCachedBody not cached.
 
 package github
 
@@ -10,6 +11,10 @@ import (
 	"strings"
 	"sync"
 )
+
+// maxCachedBody is the largest body the cache keeps; a bigger response
+// passes through uncached so a few large ones cannot pin megabytes.
+const maxCachedBody = 256 << 10
 
 // cacheHeader marks a response replayed from the ETag cache.
 const cacheHeader = "X-App-Green-Cache"
@@ -72,11 +77,20 @@ func (t *etagTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if resp.StatusCode != http.StatusOK || etag == "" {
 		return resp, nil
 	}
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCachedBody+1))
 	if err != nil {
+		_ = resp.Body.Close()
 		return nil, err
 	}
+	if len(body) > maxCachedBody {
+		// Too big to cache: hand back what was read followed by the rest.
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), resp.Body), resp.Body}
+		return resp, nil
+	}
+	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	t.store(key, &cachedResponse{etag: etag, header: resp.Header.Clone(), body: body})
 	return resp, nil

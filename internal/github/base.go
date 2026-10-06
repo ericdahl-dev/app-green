@@ -24,7 +24,8 @@ func basePRsQuery(n int) string {
 
 // missingBases lists, once each and in order, the base branches of prs'
 // open and merged PRs in repo that are not the default branch and that no
-// such PR in prs has as its head.
+// such PR in prs has as its head. Fork PRs never reach prs (RecentPRs and
+// BasePRs drop them), so a fork's same-named branch cannot hide a base.
 func missingBases(repo string, prs []model.PR) []string {
 	live := func(p model.PR) bool { return p.State != model.PRClosed && strings.EqualFold(p.Repo, repo) }
 	heads := map[string]bool{}
@@ -44,6 +45,9 @@ func missingBases(repo string, prs []model.PR) []string {
 	return out
 }
 
+// maxBranchesPerQuery caps the aliases in one base-branch query.
+const maxBranchesPerQuery = 20
+
 // maxBaseRounds caps how deep BasePRs follows a stack of other people's
 // branches.
 const maxBaseRounds = 5
@@ -51,39 +55,50 @@ const maxBaseRounds = 5
 // BasePRs returns the PR for each base branch of prs in owner/name that is
 // not the default branch and has no PR in prs, whoever wrote it. Pass them
 // to link.Link as its context PRs: they feed stack walking only (without a
-// base branch's PR a stacked PR looks Stranded) and never join a row. It repeats
-// for the bases of the PRs it found, so a stack whose lower branches belong
-// to someone else resolves down to the default branch (at most
-// maxBaseRounds queries, one branch asked once). Each branch gets the newest
-// open or merged PR whose head is that branch in this repo (a fork's PR with
-// the same branch name is skipped); a branch with none gets nothing.
-// Warnings are GraphQL errors that came with usable data.
+// base branch's PR a stacked PR looks Stranded) and never join a row.
+//
+// It repeats for the bases of the PRs it found, so a stack whose lower
+// branches belong to someone else resolves down to the default branch: at
+// most maxBaseRounds rounds, maxBranchesPerQuery branches per query, each
+// branch asked once. Each branch gets the newest open or merged PR whose
+// head is that branch in this repo (a fork's PR with the same branch name is
+// skipped); a branch with none gets nothing. Warnings, deduplicated, are
+// GraphQL errors that came with usable data and a note when the round cap
+// left bases unfetched.
 func (c *Client) BasePRs(ctx context.Context, owner, name string, prs []model.PR) ([]model.PR, []string, error) {
 	repo := strings.ToLower(owner + "/" + name)
 	asked := map[string]bool{}
 	all := slices.Clone(prs)
 	var out []model.PR
 	var warns []string
-	for range maxBaseRounds {
+	for round := 0; ; round++ {
 		var branches []string
 		for _, b := range missingBases(repo, all) {
 			if !asked[b] {
-				asked[b] = true
 				branches = append(branches, b)
 			}
 		}
 		if len(branches) == 0 {
 			break
 		}
-		found, w, err := c.basePRs(ctx, owner, name, branches)
-		warns = append(warns, w...)
-		if err != nil {
-			return nil, warns, err
+		if round == maxBaseRounds {
+			warns = append(warns, fmt.Sprintf("github: %s: stopped after %d rounds of base-branch PRs; not fetched: %s", repo, maxBaseRounds, strings.Join(branches, ", ")))
+			break
 		}
-		out = append(out, found...)
-		all = append(all, found...)
+		for _, b := range branches {
+			asked[b] = true
+		}
+		for chunk := range slices.Chunk(branches, maxBranchesPerQuery) {
+			found, w, err := c.basePRs(ctx, owner, name, chunk)
+			warns = append(warns, w...)
+			if err != nil {
+				return nil, dedupe(warns), err
+			}
+			out = append(out, found...)
+			all = append(all, found...)
+		}
 	}
-	return out, warns, nil
+	return out, dedupe(warns), nil
 }
 
 // basePRs runs one aliased query for branches.

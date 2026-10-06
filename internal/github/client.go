@@ -18,17 +18,19 @@ import (
 
 // Client talks to the GitHub API with one token.
 type Client struct {
-	http  *http.Client
+	http  *http.Client // GETs cached by ETag
+	plain *http.Client // no cache: Compare, whose results the resolver caches by SHA pair
 	token string
 	api   string
 	now   func() time.Time // reads X-RateLimit-Reset
 }
 
-// New returns a Client for token. GET responses are cached by ETag, so an
-// unchanged compare costs nothing against the rate limit.
+// New returns a Client for token. GET responses other than Compare's are
+// cached by ETag, so an unchanged one costs nothing against the rate limit.
 func New(token string) *Client {
 	return &Client{
 		http:  &http.Client{Timeout: 20 * time.Second, Transport: newETagTransport(http.DefaultTransport, 500)},
+		plain: &http.Client{Timeout: 20 * time.Second},
 		token: token,
 		api:   "https://api.github.com",
 		now:   time.Now,
@@ -40,6 +42,10 @@ func New(token string) *Client {
 func (c *Client) SetAPI(base string) { c.api = strings.TrimRight(base, "/") }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWith(ctx, c.http, method, path, body, out)
+}
+
+func (c *Client) doWith(ctx context.Context, hc *http.Client, method, path string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -58,7 +64,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}

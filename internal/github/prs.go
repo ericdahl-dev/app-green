@@ -9,6 +9,9 @@ import (
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
+// maxChecks is how many checks per PR the queries read.
+const maxChecks = 50
+
 // prFields is every PR field the adapter maps, shared by the recent-PR and
 // base-branch queries so the two cannot drift.
 const prFields = `
@@ -21,7 +24,7 @@ fragment pr on PullRequest {
   reviewRequests{totalCount}
   reviews{totalCount}
   commits(last:1){nodes{commit{statusCheckRollup{state
-    contexts(first:50){nodes{
+    contexts(first:50){pageInfo{hasNextPage} nodes{
       __typename
       ... on CheckRun{name conclusion detailsUrl checkSuite{app{slug} workflowRun{databaseId}}}
       ... on StatusContext{context state targetUrl}
@@ -81,6 +84,9 @@ type prNode struct {
 				StatusCheckRollup *struct {
 					State    string `json:"state"`
 					Contexts struct {
+						PageInfo struct {
+							HasNextPage bool `json:"hasNextPage"`
+						} `json:"pageInfo"`
 						Nodes []checkNode `json:"nodes"`
 					} `json:"contexts"`
 				} `json:"statusCheckRollup"`
@@ -117,6 +123,19 @@ func (n prNode) login() string {
 		return ""
 	}
 	return n.Author.Login
+}
+
+// checksWarning is a warning when the PR has more checks than the query
+// reads (its Failing list may then miss some), else "".
+func (n prNode) checksWarning(repo repoInfo) string {
+	if len(n.Commits.Nodes) == 0 {
+		return ""
+	}
+	r := n.Commits.Nodes[len(n.Commits.Nodes)-1].Commit.StatusCheckRollup
+	if r == nil || !r.Contexts.PageInfo.HasNextPage {
+		return ""
+	}
+	return fmt.Sprintf("github: %s#%d: more than %d checks, only the first %d read", strings.ToLower(repo.NameWithOwner), n.Number, maxChecks, maxChecks)
 }
 
 // toPR maps a node into model.PR for the repo it came from.
@@ -226,16 +245,17 @@ const maxPages = 20
 
 // RecentPRs returns author's open and merged PRs in owner/name, most
 // recently updated first, with logins compared ignoring case (an empty author
-// matches nothing). It pages while GitHub has more and the last PR on the
-// page was updated after since: the list is ordered by update time, so every
-// later PR was updated (and created) before since. since only stops paging
-// and filters nothing.
-// Warnings are GraphQL errors that came with usable data.
+// matches nothing). PRs from forks are skipped. It pages while GitHub has
+// more and the last PR on the page was updated after since: the list is
+// ordered by update time, so every later PR was updated (and created) before
+// since. since only stops paging and filters nothing. Warnings, deduplicated,
+// are GraphQL errors that came with usable data, PRs with more than
+// maxChecks checks, and a note when maxPages stopped paging early.
 func (c *Client) RecentPRs(ctx context.Context, owner, name, author string, since time.Time) ([]model.PR, []string, error) {
 	var out []model.PR
 	var warns []string
 	var after any // nil asks for the first page
-	for range maxPages {
+	for i := range maxPages {
 		var page prPage
 		w, err := c.graphql(ctx, recentPRsQuery, map[string]any{"owner": owner, "name": name, "after": after}, &page)
 		warns = append(warns, w...)
@@ -247,14 +267,33 @@ func (c *Client) RecentPRs(ctx context.Context, owner, name, author string, sinc
 		}
 		prs := page.Repository.PullRequests
 		for _, n := range prs.Nodes {
-			if author != "" && strings.EqualFold(n.login(), author) {
+			if author != "" && !n.IsCrossRepository && strings.EqualFold(n.login(), author) {
 				out = append(out, n.toPR(page.Repository.repoInfo))
+				if w := n.checksWarning(page.Repository.repoInfo); w != "" {
+					warns = append(warns, w)
+				}
 			}
 		}
 		if !prs.PageInfo.HasNextPage || len(prs.Nodes) == 0 || !prs.Nodes[len(prs.Nodes)-1].UpdatedAt.After(since) {
 			break
 		}
+		if i == maxPages-1 {
+			warns = append(warns, fmt.Sprintf("github: %s/%s: stopped after %d pages of PRs; older ones updated since %s are missing", owner, name, maxPages, since.Format(time.DateOnly)))
+		}
 		after = prs.PageInfo.EndCursor
 	}
-	return out, warns, nil
+	return out, dedupe(warns), nil
+}
+
+// dedupe drops repeated warnings, keeping the first of each in order.
+func dedupe(ws []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, w := range ws {
+		if !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	return out
 }
