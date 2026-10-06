@@ -2,7 +2,10 @@
 // beyond small helpers and imports nothing from the project.
 package model
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Ticket is one tracker issue (a Jira ticket in v1).
 type Ticket struct {
@@ -51,7 +54,7 @@ type Check struct {
 
 // PR is one pull request.
 type PR struct {
-	Repo          string // "owner/name"
+	Repo          string // "owner/name", lowercased by the adapter; must equal Deploy.Revisions keys
 	DefaultBranch string // the branch pipelines deploy, usually "main"
 	Number        int
 	Title         string
@@ -98,7 +101,7 @@ const (
 type Deploy struct {
 	ExecutionID   string
 	Status        DeployStatus
-	Revisions     map[string]string // repo "owner/name" → commit SHA
+	Revisions     map[string]string // repo "owner/name" → commit SHA; keys lowercased by the adapter, must equal PR.Repo
 	FinishedAt    time.Time         // last update time of the action
 	ApprovalToken string            // set when Status == DeployAwaitingApproval
 }
@@ -110,6 +113,8 @@ type Health struct {
 	Healthy int
 }
 
+// OK reports whether the service is healthy. Unknown health counts as OK so a
+// missing service never raises FlagUnhealthy; a service scaled to zero is OK.
 func (h Health) OK() bool { return !h.Known || h.Healthy >= h.Desired }
 
 // EnvHistory is everything the AWS adapter knows about one Env.
@@ -129,6 +134,15 @@ const (
 	SlotDeployed
 	SlotUnknown // a compare call failed or returned 404
 )
+
+var slotStateNames = [...]string{"not yet", "awaiting approval", "in progress", "failed", "deployed", "unknown"}
+
+func (s SlotState) String() string {
+	if s < 0 || int(s) >= len(slotStateNames) {
+		return fmt.Sprintf("SlotState(%d)", int(s))
+	}
+	return slotStateNames[s]
+}
 
 // EnvSlot is where a chain's work stands in one Env.
 type EnvSlot struct {
@@ -151,8 +165,13 @@ const (
 	StageInProd
 )
 
+var stageNames = [...]string{"started", "PR open", "merged", "in test", "awaiting prod", "in prod"}
+
 func (s Stage) String() string {
-	return [...]string{"started", "PR open", "merged", "in test", "awaiting prod", "in prod"}[s]
+	if s < 0 || int(s) >= len(stageNames) {
+		return fmt.Sprintf("Stage(%d)", int(s))
+	}
+	return stageNames[s]
 }
 
 type Level int
@@ -179,6 +198,24 @@ const (
 	FlagStatusMismatch
 )
 
+var flagKindNames = [...]string{
+	"pipeline failed",
+	"unhealthy",
+	"check failed",
+	"changes requested",
+	"awaiting approval",
+	"ready to merge",
+	"stale review",
+	"status mismatch",
+}
+
+func (k FlagKind) String() string {
+	if k < 0 || int(k) >= len(flagKindNames) {
+		return fmt.Sprintf("FlagKind(%d)", int(k))
+	}
+	return flagKindNames[k]
+}
+
 // Flag is one reason a chain needs attention.
 type Flag struct {
 	Level  Level
@@ -197,12 +234,16 @@ type Chain struct {
 	Flags  []Flag // ordered; Flags[0] is the row's flag
 }
 
-// Level is the chain's worst flag level.
+// Level is the chain's worst flag level, the max over all Flags. Flags[0] is
+// still the row's flag; Level does not depend on Flags being sorted.
 func (c Chain) Level() Level {
-	if len(c.Flags) == 0 {
-		return None
+	worst := None
+	for _, f := range c.Flags {
+		if f.Level.Worse(worst) {
+			worst = f.Level
+		}
 	}
-	return c.Flags[0].Level
+	return worst
 }
 
 // Inclusion is the answer to "is commit A in commit B?".
