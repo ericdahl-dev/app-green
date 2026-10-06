@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +31,7 @@ func TestMyTickets(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := jira.New(srv.URL, "me@example.com", "tok")
-	ts, err := c.MyTickets(context.Background(), []string{"ABC", "XYZ"})
+	ts, _, err := c.MyTickets(context.Background(), []string{"ABC", "XYZ"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +92,7 @@ func TestMyTicketsFollowsPages(t *testing.T) {
 		http.ServeFile(w, r, "testdata/search_page1.json")
 	}))
 	defer srv.Close()
-	ts, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	ts, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +112,7 @@ func TestMyTicketsRepeatedPageTokenIsError(t *testing.T) {
 		http.ServeFile(w, r, "testdata/search_page1.json") // always says "next is p2"
 	}))
 	defer srv.Close()
-	_, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	_, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
 	if err == nil || !strings.Contains(err.Error(), "repeated") {
 		t.Fatalf("err = %v, want repeated-token error", err)
 	}
@@ -126,7 +129,7 @@ func TestTicketsByKey(t *testing.T) {
 		http.ServeFile(w, r, "testdata/search.json")
 	}))
 	defer srv.Close()
-	ts, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), []string{"ABC-1", "ABC-2"})
+	ts, _, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), []string{"ABC-1", "ABC-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +148,7 @@ func TestTicketsByKeyEmptyMakesNoRequest(t *testing.T) {
 		http.ServeFile(w, r, "testdata/search.json")
 	}))
 	defer srv.Close()
-	ts, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), nil)
+	ts, _, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), nil)
 	if err != nil || len(ts) != 0 || calls != 0 {
 		t.Errorf("tickets = %+v, err = %v, requests = %d; want none, nil, 0", ts, err, calls)
 	}
@@ -157,30 +160,30 @@ func TestUnauthorizedIsAuth(t *testing.T) {
 		_, _ = w.Write([]byte(`{"errorMessages":["Client must be authenticated"]}`))
 	}))
 	defer srv.Close()
-	_, err := jira.New(srv.URL, "me@example.com", "bad").MyTickets(context.Background(), []string{"ABC"})
+	_, _, err := jira.New(srv.URL, "me@example.com", "bad").MyTickets(context.Background(), []string{"ABC"})
 	if !jira.IsAuth(err) {
 		t.Fatalf("err = %v, want IsAuth", err)
 	}
 }
 
-func TestForbiddenIsNotAuth(t *testing.T) {
+func TestSearchForbiddenIsNotAuth(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
-	_, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	_, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
 	if err == nil || jira.IsAuth(err) {
 		t.Fatalf("err = %v, want a non-auth error", err)
 	}
 }
 
-func TestRateLimitCarriesRetryAfter(t *testing.T) {
+func TestSearchRateLimitCarriesRetryAfter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	_, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	_, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
 	var ae *jira.APIError
 	if !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || ae.RetryAfter != 30*time.Second {
 		t.Fatalf("err = %#v, want *APIError 429 with RetryAfter 30s", err)
@@ -195,7 +198,7 @@ func TestRateLimitWithoutRetryAfterDefaultsToMinute(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	_, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), []string{"ABC-1"})
+	_, _, err := jira.New(srv.URL, "me@example.com", "tok").TicketsByKey(context.Background(), []string{"ABC-1"})
 	var ae *jira.APIError
 	if !errors.As(err, &ae) || ae.RetryAfter != time.Minute {
 		t.Fatalf("err = %#v, want RetryAfter 1m", err)
@@ -249,9 +252,13 @@ func TestMalformedFieldBlanksOnlyThatField(t *testing.T) {
 		http.ServeFile(w, r, "testdata/search_malformed.json")
 	}))
 	defer srv.Close()
-	ts, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	ts, warnings, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(warnings) != 2 || !strings.HasPrefix(warnings[0], "ABC-1 updated: ") ||
+		!strings.HasPrefix(warnings[1], "ABC-2 statuscategorychangedate: ") {
+		t.Errorf("warnings = %q", warnings)
 	}
 	if len(ts) != 2 {
 		t.Fatalf("got %d tickets, want 2: %+v", len(ts), ts)
@@ -276,5 +283,108 @@ func TestMalformedFieldBlanksOnlyThatField(t *testing.T) {
 		if !ticketEqual(ts[i], want[i]) {
 			t.Errorf("ts[%d] = %+v, want %+v", i, ts[i], want[i])
 		}
+	}
+}
+
+// countingServer counts requests and answers with the two-ticket fixture.
+func countingServer(t *testing.T, calls *int) *jira.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		http.ServeFile(w, r, "testdata/search.json")
+	}))
+	t.Cleanup(srv.Close)
+	return jira.New(srv.URL, "me@example.com", "tok")
+}
+
+func TestMyTicketsNoProjectsIsError(t *testing.T) {
+	calls := 0
+	_, _, err := countingServer(t, &calls).MyTickets(context.Background(), nil)
+	if err == nil || calls != 0 {
+		t.Errorf("err = %v, requests = %d; want an error and no request", err, calls)
+	}
+}
+
+func TestMyTicketsBadProjectKeyIsError(t *testing.T) {
+	for _, bad := range []string{"abc", "A", "1AB", "AB) OR (1=1", "AB-1", ""} {
+		calls := 0
+		_, _, err := countingServer(t, &calls).MyTickets(context.Background(), []string{"ABC", bad})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", bad)) || calls != 0 {
+			t.Errorf("project %q: err = %v, requests = %d; want an error naming it and no request", bad, err, calls)
+		}
+	}
+}
+
+func TestTicketsByKeyBadKeyIsError(t *testing.T) {
+	for _, bad := range []string{"abc-1", "ABC", "ABC-", "ABC-1x", "ABC-1) OR (1=1", ""} {
+		calls := 0
+		_, _, err := countingServer(t, &calls).TicketsByKey(context.Background(), []string{"ABC-1", bad})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", bad)) || calls != 0 {
+			t.Errorf("key %q: err = %v, requests = %d; want an error naming it and no request", bad, err, calls)
+		}
+	}
+}
+
+func TestTicketKeyIsUppercased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"issues":[{"key":"abc-7","fields":{"summary":"x"}}],"isLast":true}`))
+	}))
+	defer srv.Close()
+	ts, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	if err != nil || len(ts) != 1 || ts[0].Key != "ABC-7" || ts[0].URL != srv.URL+"/browse/ABC-7" {
+		t.Fatalf("tickets = %+v, err = %v; want key ABC-7", ts, err)
+	}
+}
+
+func TestSearchPageCapIsError(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = fmt.Fprintf(w, `{"issues":[],"nextPageToken":"p%d","isLast":false}`, calls)
+	}))
+	defer srv.Close()
+	_, _, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	if err == nil || !strings.Contains(err.Error(), "more than 50 pages") || calls != 50 {
+		t.Fatalf("err = %v after %d requests; want page-cap error after 50", err, calls)
+	}
+}
+
+func TestCancelledContext(t *testing.T) {
+	calls := 0
+	c := countingServer(t, &calls)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := c.MyTickets(ctx, []string{"ABC"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A success body is read to the end, so the keep-alive connection is reused.
+func TestSuccessBodyIsDrainedForReuse(t *testing.T) {
+	var mu sync.Mutex
+	conns := 0
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"accountId":"acct-me"}` + strings.Repeat(" ", 64<<10)))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			mu.Lock()
+			conns++
+			mu.Unlock()
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	c := jira.New(srv.URL, "me@example.com", "tok")
+	for range 3 {
+		if _, err := c.Myself(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if conns != 1 {
+		t.Errorf("opened %d connections for 3 requests, want 1", conns)
 	}
 }

@@ -78,11 +78,14 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		}
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("jira: decode %s: %w", path, err)
 	}
+	// Read to the end so the keep-alive connection can be reused.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -102,8 +105,8 @@ func (c *Client) Myself(ctx context.Context) (User, error) {
 // API is the subset of Client the resolver and UI use; tests supply fakes.
 type API interface {
 	Myself(ctx context.Context) (User, error)
-	MyTickets(ctx context.Context, projects []string) ([]model.Ticket, error)
-	TicketsByKey(ctx context.Context, keys []string) ([]model.Ticket, error)
+	MyTickets(ctx context.Context, projects []string) ([]model.Ticket, []string, error)
+	TicketsByKey(ctx context.Context, keys []string) ([]model.Ticket, []string, error)
 	Transitions(ctx context.Context, key string) ([]Transition, error)
 	DoTransition(ctx context.Context, key, transitionID string) error
 }

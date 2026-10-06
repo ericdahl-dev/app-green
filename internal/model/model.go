@@ -15,7 +15,7 @@ type Ticket struct {
 	StatusCategory StatusCategory
 	URL            string
 	Updated        time.Time
-	StatusSince    time.Time // when it entered Status; zero if unknown
+	StatusSince    time.Time // when it entered StatusCategory (Jira statuscategorychangedate); zero if unknown
 }
 
 // StatusCategory is Jira's statusCategory.key, which stays the same whatever
