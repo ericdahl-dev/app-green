@@ -12,6 +12,7 @@ import (
 // branch yet, or malformed input) counts as SlotNotYet. The chain's slot is
 // its least advanced PR (see rank; Failed is the least advanced of all); for
 // ties, the latest Deployed time and the newest AwaitingApproval deploy win.
+// Applies is set when at least one merged PR is in a repo this Env deploys.
 func Slot(prs []model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlot {
 	slot := model.EnvSlot{Env: h.Env, Health: h.Health, State: model.SlotNotYet}
 	var results []model.EnvSlot
@@ -38,6 +39,7 @@ func Slot(prs []model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSl
 		}
 	}
 	worst.Health = h.Health
+	worst.Applies = true
 	return worst
 }
 

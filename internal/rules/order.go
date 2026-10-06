@@ -1,7 +1,10 @@
 package rules
 
 import (
+	"cmp"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ericdahl-dev/app-green/internal/model"
@@ -15,8 +18,8 @@ func Evaluate(chains []model.Chain, now time.Time, th Thresholds) []model.Chain 
 	for _, c := range chains {
 		c.Stage = Stage(c)
 		c.Flags = Flags(c, now, th)
-		if c.Stage == model.StageInProd && c.Level() == model.None && th.FadeAfter > 0 &&
-			now.Sub(prodSince(c)) > th.FadeAfter {
+		if since, ok := prodSince(c); ok && c.Stage == model.StageInProd && c.Level() == model.None &&
+			th.FadeAfter > 0 && now.Sub(since) > th.FadeAfter {
 			continue
 		}
 		out = append(out, c)
@@ -33,26 +36,42 @@ func Evaluate(chains []model.Chain, now time.Time, th Thresholds) []model.Chain 
 	return out
 }
 
-// prodSince is the latest time a prod slot was deployed.
-func prodSince(c model.Chain) time.Time {
-	var t time.Time
+// prodSince is the latest time an applicable prod slot was deployed. ok is
+// false when one has no time, so a row never fades on a missing timestamp.
+func prodSince(c model.Chain) (since time.Time, ok bool) {
 	for _, s := range c.Slots {
-		if s.Env.Prod && s.State == model.SlotDeployed && s.At.After(t) {
-			t = s.At
+		if !s.Applies || !s.Env.Prod || s.State != model.SlotDeployed {
+			continue
+		}
+		if s.At.IsZero() {
+			return time.Time{}, false
+		}
+		if s.At.After(since) {
+			since = s.At
 		}
 	}
-	return t
+	return since, !since.IsZero()
 }
 
+// compareKeys orders ticket keys by project, then by number: ABC-9, ABC-10,
+// XY-2. A key without a numeric suffix compares as plain text.
 func compareKeys(a, b string) int {
-	if len(a) != len(b) {
-		return len(a) - len(b) // ABC-9 before ABC-10
+	ap, an, aok := splitKey(a)
+	bp, bn, bok := splitKey(b)
+	if !aok || !bok {
+		return strings.Compare(a, b)
 	}
-	if a < b {
-		return -1
+	if c := strings.Compare(ap, bp); c != 0 {
+		return c
 	}
-	if a > b {
-		return 1
+	return cmp.Compare(an, bn)
+}
+
+func splitKey(k string) (project string, n int, ok bool) {
+	i := strings.LastIndexByte(k, '-')
+	if i < 0 {
+		return "", 0, false
 	}
-	return 0
+	n, err := strconv.Atoi(k[i+1:])
+	return k[:i], n, err == nil
 }

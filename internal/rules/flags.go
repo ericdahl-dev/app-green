@@ -24,6 +24,9 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 	}
 	for i := range c.Slots {
 		s := &c.Slots[i]
+		if !s.Applies {
+			continue // this Env deploys none of the chain's merged repos
+		}
 		switch {
 		case s.State == model.SlotFailed:
 			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s failed", s.Env.Account, s.Env.Stage), nil, s)
@@ -31,6 +34,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Red, model.FlagUnhealthy, fmt.Sprintf("%s %s %d/%d healthy", s.Env.Account, s.Env.Stage, s.Health.Healthy, s.Health.Desired), nil, s)
 		case s.State == model.SlotAwaitingApproval:
 			add(model.Yellow, model.FlagAwaitingApproval, fmt.Sprintf("%s %s awaiting approval", s.Env.Account, s.Env.Stage), nil, s)
+		case s.State == model.SlotUnknown:
+			add(model.Yellow, model.FlagDeployUnknown, fmt.Sprintf("%s %s deploy status unknown", s.Env.Account, s.Env.Stage), nil, s)
 		}
 	}
 	for i := range c.PRs {
@@ -43,7 +48,7 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Red, model.FlagCheckFailed, fmt.Sprintf("PR #%d %s failing", p.Number, checkNames(p.Failing)), p, nil)
 		case p.Review == model.ReviewChangesRequested:
 			add(model.Red, model.FlagChangesRequested, fmt.Sprintf("PR #%d changes requested", p.Number), p, nil)
-		case p.Review == model.ReviewApproved && p.Checks == model.ChecksPassing:
+		case p.Review == model.ReviewApproved && (p.Checks == model.ChecksPassing || p.Checks == model.ChecksNone):
 			add(model.Yellow, model.FlagReadyToMerge, fmt.Sprintf("PR #%d approved, not merged", p.Number), p, nil)
 		case p.Reviewers == 0 && p.Checks != model.ChecksPending:
 			add(model.Yellow, model.FlagStaleReview, fmt.Sprintf("PR #%d has no reviewer", p.Number), p, nil)
@@ -64,11 +69,15 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 }
 
 func statusMismatch(c model.Chain, now time.Time, th Thresholds) string {
+	since := c.Ticket.StatusSince
+	if since.IsZero() {
+		since = c.Ticket.Updated // a safe stand-in: it is never older than the status change
+	}
 	switch {
 	case c.Ticket.StatusCategory == "In Progress" && c.Stage >= model.StageMerged:
 		return "Jira still " + orDefault(c.Ticket.Status, "In Progress") + ", PR merged"
 	case c.Ticket.StatusCategory == "Done" && c.Stage != model.StageInProd &&
-		!c.Ticket.StatusSince.IsZero() && now.Sub(c.Ticket.StatusSince) > th.DoneGrace:
+		!since.IsZero() && now.Sub(since) > th.DoneGrace:
 		return "Jira Done, not in prod"
 	}
 	return ""

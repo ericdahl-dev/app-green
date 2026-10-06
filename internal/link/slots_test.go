@@ -384,3 +384,19 @@ func TestSlotHealthPassesThrough(t *testing.T) {
 		t.Errorf("slot = %+v, want health %+v with no PRs", s, hl)
 	}
 }
+
+func TestSlotAppliesOnlyWhenAMergedPRIsInARepoTheEnvDeploys(t *testing.T) {
+	h := model.EnvHistory{Env: prod, Deploys: []model.Deploy{dep(model.DeploySucceeded, "aaaa", t0)}}
+	docs := model.PR{Repo: "acme/docs", State: model.PRMerged, EffectiveSHA: "dddd"}
+	open := model.PR{Repo: "acme/app", State: model.PROpen}
+	if s := link.Slot([]model.PR{docs, open}, h, noCompare(t)); s.Applies {
+		t.Errorf("slot = %+v, want Applies false: no merged PR is in a repo this Env deploys", s)
+	}
+	if s := link.Slot([]model.PR{docs, merged("aaaa")}, h, noCompare(t)); !s.Applies {
+		t.Errorf("slot = %+v, want Applies true: acme/app is merged and deployed here", s)
+	}
+	pending := model.PR{Repo: "acme/app", State: model.PRMerged, StackPending: true}
+	if s := link.Slot([]model.PR{pending}, h, noCompare(t)); !s.Applies {
+		t.Errorf("slot = %+v, want Applies true: a stack-pending acme/app PR still belongs to this Env", s)
+	}
+}

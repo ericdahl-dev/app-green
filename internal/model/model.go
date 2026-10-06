@@ -152,6 +152,9 @@ type EnvSlot struct {
 	At     time.Time
 	Health Health
 	Deploy *Deploy // the deploy that decided State, if any
+	// Applies is true when at least one of the chain's merged PRs is in a
+	// repo this Env deploys. rules ignores slots where it is false.
+	Applies bool
 }
 
 type Stage int
@@ -196,6 +199,7 @@ const (
 	FlagReadyToMerge
 	FlagStaleReview
 	FlagStatusMismatch
+	FlagDeployUnknown // an Env's deploy status could not be decided
 )
 
 var flagKindNames = [...]string{
@@ -207,6 +211,7 @@ var flagKindNames = [...]string{
 	"ready to merge",
 	"stale review",
 	"status mismatch",
+	"deploy unknown",
 }
 
 func (k FlagKind) String() string {

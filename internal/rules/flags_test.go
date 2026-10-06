@@ -35,27 +35,37 @@ func TestFlags(t *testing.T) {
 			[]model.FlagKind{model.FlagChangesRequested}},
 		{"an approved, green PR that is not merged is ready to merge", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagReadyToMerge}},
+		{"an approved PR in a repo with no checks is ready to merge", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksNone, Review: model.ReviewApproved, Reviewers: 1}}},
+			[]model.FlagKind{model.FlagReadyToMerge}},
 		{"a PR with checks done and no reviewer is waiting on review", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, OpenedAt: now}}},
 			[]model.FlagKind{model.FlagStaleReview}},
 		{"a PR with no review after StaleReview is stale", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, Reviewers: 1, Review: model.ReviewRequired, OpenedAt: now.Add(-72 * time.Hour)}}},
 			[]model.FlagKind{model.FlagStaleReview}},
-		{"a failed pipeline run flags the row", model.Chain{Slots: []model.EnvSlot{{Env: testEnv, State: model.SlotFailed}}}, []model.FlagKind{model.FlagPipelineFailed}},
-		{"fewer healthy tasks than desired after a deploy flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, State: model.SlotDeployed, Health: model.Health{Known: true, Desired: 2, Healthy: 1}}}},
+		{"a failed pipeline run flags the row", model.Chain{Slots: []model.EnvSlot{{Env: testEnv, Applies: true, State: model.SlotFailed}}}, []model.FlagKind{model.FlagPipelineFailed}},
+		{"fewer healthy tasks than desired after a deploy flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotDeployed, Health: model.Health{Known: true, Desired: 2, Healthy: 1}}}},
 			[]model.FlagKind{model.FlagUnhealthy}},
-		{"a pipeline paused for approval flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, State: model.SlotAwaitingApproval}}}, []model.FlagKind{model.FlagAwaitingApproval}},
+		{"a pipeline paused for approval flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}}, []model.FlagKind{model.FlagAwaitingApproval}},
 		{"Jira still In Progress after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: "In Progress"}, Stage: model.StageMerged,
 			PRs: []model.PR{{State: model.PRMerged}}}, []model.FlagKind{model.FlagStatusMismatch}},
 		{"Done but not in prod within DoneGrace is not flagged yet", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", StatusSince: now.Add(-time.Hour)}, Stage: model.StageInTest}, nil},
 		{"Done but not in prod past DoneGrace is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", StatusSince: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
 			[]model.FlagKind{model.FlagStatusMismatch}},
+		{"Done with no status time falls back to the ticket's last update", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", Updated: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
+			[]model.FlagKind{model.FlagStatusMismatch}},
+		{"Done with neither a status time nor an update time is not flagged", model.Chain{Ticket: model.Ticket{StatusCategory: "Done"}, Stage: model.StageInTest}, nil},
 		{"red flags come before yellow ones", model.Chain{PRs: []model.PR{failing},
-			Slots: []model.EnvSlot{{Env: prodEnv, State: model.SlotAwaitingApproval}}},
+			Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}},
 			[]model.FlagKind{model.FlagCheckFailed, model.FlagAwaitingApproval}},
 		{"within a level, flags follow FlagKind order, not PR order", model.Chain{PRs: []model.PR{
 			{Number: 1, State: model.PROpen, Checks: model.ChecksPassing, OpenedAt: now},
 			{Number: 2, State: model.PROpen, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagReadyToMerge, model.FlagStaleReview}},
-		{"a deploy with unknown health raises nothing", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, State: model.SlotDeployed}}}, nil},
+		{"a deploy with unknown health raises nothing", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotDeployed}}}, nil},
+		{"slots in Envs that do not deploy the chain's repos raise nothing", model.Chain{Slots: []model.EnvSlot{
+			{Env: testEnv, State: model.SlotFailed}, {Env: prodEnv, State: model.SlotAwaitingApproval},
+			{Env: otherProd, State: model.SlotDeployed, Health: model.Health{Known: true, Desired: 2}}}}, nil},
+		{"a deploy status that cannot be decided is flagged", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotUnknown}}},
+			[]model.FlagKind{model.FlagDeployUnknown}},
 	}
 	for _, c := range cases {
 		if got := kinds(rules.Flags(c.c, now, th)); !slices.Equal(got, c.want) {
@@ -72,5 +82,17 @@ func TestCheckFailedFlagTargetsItsPRAtRed(t *testing.T) {
 	}
 	if fs[0].PR == nil || fs[0].PR.Number != 7 || fs[0].Level != model.Red {
 		t.Errorf("flag %+v should target PR #7 at red", fs[0])
+	}
+}
+
+func TestDeployUnknownFlagTargetsItsSlotAtYellow(t *testing.T) {
+	c := model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotUnknown}}}
+	fs := rules.Flags(c, now, rules.Thresholds{})
+	if len(fs) != 1 {
+		t.Fatalf("flags %v, want one deploy-unknown flag", kinds(fs))
+	}
+	f := fs[0]
+	if f.Level != model.Yellow || f.Slot == nil || f.Slot.Env != prodEnv || f.Reason != "a Production deploy status unknown" {
+		t.Errorf("flag %+v, want yellow on the Production slot with reason %q", f, "a Production deploy status unknown")
 	}
 }

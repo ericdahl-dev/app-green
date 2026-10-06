@@ -6,9 +6,12 @@ import "github.com/ericdahl-dev/app-green/internal/model"
 
 // Stage is the furthest point the chain's work has reached: the least
 // advanced PR decides among PR states (any open PR means PR open; any
-// stack-pending PR means merged), then the furthest slot in any Env decides.
-// Unknown and failed slots, and test slots still in progress or awaiting
-// approval, never advance the stage; flags report what is wrong.
+// stack-pending PR means merged), then the slots decide. Only slots that apply
+// (the Env deploys one of the chain's merged repos) count. In prod means every
+// applicable prod slot is Deployed; awaiting prod means at least one is
+// Deployed, awaiting approval or in progress; in test means a test slot is
+// Deployed. Unknown and failed slots never advance the stage; flags report
+// what is wrong.
 func Stage(c model.Chain) model.Stage {
 	if len(c.PRs) == 0 {
 		return model.StageStarted
@@ -26,21 +29,31 @@ func Stage(c model.Chain) model.Stage {
 		return model.StageMerged
 	}
 	best := model.StageMerged
+	prod, prodDeployed, prodMoving := 0, 0, false
 	for _, s := range c.Slots {
-		var st model.Stage
-		switch {
-		case s.Env.Prod && s.State == model.SlotDeployed:
-			st = model.StageInProd
-		case s.Env.Prod && (s.State == model.SlotAwaitingApproval || s.State == model.SlotInProgress):
-			st = model.StageAwaitingProd
-		case !s.Env.Prod && s.State == model.SlotDeployed:
-			st = model.StageInTest
-		default:
+		if !s.Applies {
 			continue
 		}
-		if st > best {
-			best = st
+		if !s.Env.Prod {
+			if s.State == model.SlotDeployed {
+				best = model.StageInTest
+			}
+			continue
 		}
+		prod++
+		switch s.State {
+		case model.SlotDeployed:
+			prodDeployed++
+			prodMoving = true
+		case model.SlotAwaitingApproval, model.SlotInProgress:
+			prodMoving = true
+		}
+	}
+	switch {
+	case prod > 0 && prodDeployed == prod:
+		return model.StageInProd
+	case prodMoving:
+		return model.StageAwaitingProd
 	}
 	return best
 }

@@ -58,7 +58,7 @@ func TestEvaluateBreaksTiesByTicketKeyInNumberOrder(t *testing.T) {
 
 func inProdSince(key string, at time.Time) model.Chain {
 	return model.Chain{Ticket: model.Ticket{Key: key}, PRs: []model.PR{{State: model.PRMerged, EffectiveSHA: "a"}},
-		Slots: []model.EnvSlot{{Env: prodEnv, State: model.SlotDeployed, At: at}}}
+		Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotDeployed, At: at}}}
 }
 
 func TestEvaluateFadesCleanRowsInProdLongerThanFadeAfter(t *testing.T) {
@@ -98,5 +98,40 @@ func TestEvaluateSortsAndFades(t *testing.T) {
 	want := []string{"ABC-3", "ABC-2", "ABC-4"} // red first; then furthest stage; ABC-1 faded
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("order %v, want %v", got, want)
+	}
+}
+
+func TestEvaluateDoesNotFadeUntilEveryProdEnvHasIt(t *testing.T) {
+	th := rules.Thresholds{FadeAfter: 24 * time.Hour}
+	c := inProdSince("ABC-1", now.Add(-30*time.Hour))
+	c.Slots = append(c.Slots, model.EnvSlot{Env: otherProd, Applies: true, State: model.SlotNotYet})
+	got := rules.Evaluate([]model.Chain{c}, now, th)
+	if len(got) != 1 || got[0].Stage != model.StageAwaitingProd {
+		t.Errorf("got %v, want ABC-1 kept at %v: the second prod Env does not have it yet", keysOf(got), model.StageAwaitingProd)
+	}
+}
+
+func TestEvaluateNeverFadesAProdDeployWithNoTime(t *testing.T) {
+	th := rules.Thresholds{FadeAfter: 24 * time.Hour}
+	got := keysOf(rules.Evaluate([]model.Chain{inProdSince("ABC-1", time.Time{})}, now, th))
+	if want := []string{"ABC-1"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("rows %v, want %v: with no deploy time we cannot know it has been in prod long enough", got, want)
+	}
+}
+
+func TestEvaluateFadeIgnoresProdEnvsThatDoNotApply(t *testing.T) {
+	th := rules.Thresholds{FadeAfter: 24 * time.Hour}
+	c := inProdSince("ABC-1", now.Add(-30*time.Hour))
+	c.Slots = append(c.Slots, model.EnvSlot{Env: otherProd, State: model.SlotDeployed, At: now.Add(-time.Hour)})
+	if got := keysOf(rules.Evaluate([]model.Chain{c}, now, th)); len(got) != 0 {
+		t.Errorf("rows %v, want none: only the applicable prod Env's 30h counts, not another repo's 1h-old deploy", got)
+	}
+}
+
+func TestEvaluateBreaksTiesByProjectThenNumber(t *testing.T) {
+	chains := []model.Chain{{Ticket: model.Ticket{Key: "XY-2"}}, {Ticket: model.Ticket{Key: "ABC-10"}}, {Ticket: model.Ticket{Key: "ABC-9"}}}
+	got := keysOf(rules.Evaluate(chains, now, rules.Thresholds{}))
+	if want := []string{"ABC-9", "ABC-10", "XY-2"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("order %v, want %v (project first, then number)", got, want)
 	}
 }

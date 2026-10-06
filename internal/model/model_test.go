@@ -43,7 +43,7 @@ func TestSlotStateString(t *testing.T) {
 }
 
 func TestFlagKindString(t *testing.T) {
-	for k := model.FlagPipelineFailed; k <= model.FlagStatusMismatch; k++ {
+	for k := model.FlagPipelineFailed; k <= model.FlagDeployUnknown; k++ {
 		if got := k.String(); got == "" || strings.HasPrefix(got, "FlagKind(") {
 			t.Errorf("FlagKind %d has no label: %q", int(k), got)
 		}
@@ -78,5 +78,14 @@ func TestChainLevel(t *testing.T) {
 	}
 	if got := (model.Chain{}).Level(); got != model.None {
 		t.Errorf("no flags: Level() = %v, want None", got)
+	}
+}
+
+func TestFlagDeployUnknownIsLastAndLabeled(t *testing.T) {
+	if model.FlagDeployUnknown <= model.FlagStatusMismatch {
+		t.Errorf("FlagDeployUnknown = %d, want it after FlagStatusMismatch (%d)", model.FlagDeployUnknown, model.FlagStatusMismatch)
+	}
+	if got := model.FlagDeployUnknown.String(); got != "deploy unknown" {
+		t.Errorf("FlagDeployUnknown.String() = %q, want %q", got, "deploy unknown")
 	}
 }
