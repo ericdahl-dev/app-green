@@ -243,3 +243,38 @@ func TestDoTransition(t *testing.T) {
 		t.Errorf("got %s %s id=%q", method, path, id)
 	}
 }
+
+func TestMalformedFieldBlanksOnlyThatField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "testdata/search_malformed.json")
+	}))
+	defer srv.Close()
+	ts, err := jira.New(srv.URL, "me@example.com", "tok").MyTickets(context.Background(), []string{"ABC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ts) != 2 {
+		t.Fatalf("got %d tickets, want 2: %+v", len(ts), ts)
+	}
+	edt := time.FixedZone("", -4*3600)
+	want := []model.Ticket{{
+		Key:            "ABC-1",
+		Title:          "Add widget export",
+		Status:         "Code Review",
+		StatusCategory: model.StatusInProgress,
+		URL:            srv.URL + "/browse/ABC-1",
+		StatusSince:    time.Date(2026, 10, 1, 8, 30, 0, 0, edt), // Updated is bad: zero
+	}, {
+		Key:            "ABC-2",
+		Title:          "Fix gadget rounding",
+		Status:         "Done",
+		StatusCategory: model.StatusDone,
+		URL:            srv.URL + "/browse/ABC-2",
+		Updated:        time.Date(2026, 10, 4, 15, 0, 0, 0, edt), // StatusSince is bad: zero
+	}}
+	for i := range want {
+		if !ticketEqual(ts[i], want[i]) {
+			t.Errorf("ts[%d] = %+v, want %+v", i, ts[i], want[i])
+		}
+	}
+}

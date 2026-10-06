@@ -4,6 +4,7 @@ package jira
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -25,18 +26,15 @@ type issue struct {
 }
 
 type apiIssue struct {
-	Key    string `json:"key"`
-	Fields struct {
-		Summary string `json:"summary"`
-		Status  struct {
-			Name           string `json:"name"`
-			StatusCategory struct {
-				Key string `json:"key"`
-			} `json:"statusCategory"`
-		} `json:"status"`
-		Updated                  Time `json:"updated"`
-		StatusCategoryChangeDate Time `json:"statuscategorychangedate"`
-	} `json:"fields"`
+	Key    string                     `json:"key"`
+	Fields map[string]json.RawMessage `json:"fields"`
+}
+
+type apiStatus struct {
+	Name           string `json:"name"`
+	StatusCategory struct {
+		Key string `json:"key"`
+	} `json:"statusCategory"`
 }
 
 type searchResp struct {
@@ -75,14 +73,30 @@ func (c *Client) search(ctx context.Context, jql string) ([]issue, error) {
 	return nil, fmt.Errorf("jira: search: more than %d pages", maxPages)
 }
 
+// decodeField decodes fields[name] into a fresh T, so one malformed field
+// does not blank the others. Missing, null and malformed fields all give the
+// zero value (never a partial one).
+func decodeField[T any](fields map[string]json.RawMessage, name string) T {
+	var v T
+	raw, ok := fields[name]
+	if !ok || string(raw) == "null" {
+		return v
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		var zero T
+		return zero
+	}
+	return v
+}
+
 func convert(ai apiIssue) issue {
-	f := ai.Fields
+	st := decodeField[apiStatus](ai.Fields, "status")
 	return issue{
 		Key:                       ai.Key,
-		Summary:                   f.Summary,
-		StatusName:                f.Status.Name,
-		StatusCategory:            f.Status.StatusCategory.Key,
-		Updated:                   f.Updated,
-		StatusCategoryChangedDate: f.StatusCategoryChangeDate,
+		Summary:                   decodeField[string](ai.Fields, "summary"),
+		StatusName:                st.Name,
+		StatusCategory:            st.StatusCategory.Key,
+		Updated:                   decodeField[Time](ai.Fields, "updated"),
+		StatusCategoryChangedDate: decodeField[Time](ai.Fields, "statuscategorychangedate"),
 	}
 }
