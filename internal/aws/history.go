@@ -140,13 +140,13 @@ func oldestStart(summaries []types.PipelineExecutionSummary) time.Time {
 	return oldest
 }
 
-// stageDeploys returns spec's deploys from its deploy action's executions,
-// and the approval action executions still waiting for a run that has not
-// reached the deploy action. Runs whose execution is not in execs (outside
+// stageDeploys returns spec's deploys from its deploy action's executions
+// (one per execution, the latest attempt), and the approval action
+// executions still waiting for a run that has not reached the deploy action. Runs whose execution is not in execs (outside
 // the window, superseded or canceled) are dropped.
 func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]map[string]string) ([]model.Deploy, []types.ActionExecutionDetail) {
 	deploys := []model.Deploy{}
-	deployed := map[string]bool{}
+	deployed := map[string]int{} // execution ID → index in deploys
 	var waiting []types.ActionExecutionDetail
 	for _, a := range acts {
 		id := awssdk.ToString(a.PipelineExecutionId)
@@ -161,13 +161,22 @@ func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[
 			if !ok {
 				continue
 			}
-			deployed[id] = true
-			deploys = append(deploys, model.Deploy{
+			d := model.Deploy{
 				ExecutionID: id,
 				Status:      status,
 				Revisions:   maps.Clone(revs),
 				FinishedAt:  awssdk.ToTime(a.LastUpdateTime),
-			})
+			}
+			// A stage retry re-runs the action under the same execution:
+			// keep the latest attempt.
+			if i, seen := deployed[id]; seen {
+				if d.FinishedAt.After(deploys[i].FinishedAt) {
+					deploys[i] = d
+				}
+				continue
+			}
+			deployed[id] = len(deploys)
+			deploys = append(deploys, d)
 		case spec.ApprovalAction != "" && stage == spec.ApprovalStage && action == spec.ApprovalAction &&
 			a.Status == types.ActionExecutionStatusInProgress:
 			waiting = append(waiting, a)
@@ -175,7 +184,7 @@ func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[
 	}
 	var pending []types.ActionExecutionDetail
 	for _, a := range waiting {
-		if !deployed[awssdk.ToString(a.PipelineExecutionId)] {
+		if _, ok := deployed[awssdk.ToString(a.PipelineExecutionId)]; !ok {
 			pending = append(pending, a)
 		}
 	}

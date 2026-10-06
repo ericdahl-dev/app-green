@@ -22,6 +22,9 @@ func TestIsSSOExpired(t *testing.T) {
 		{"session message", errors.New("operation error: failed to refresh cached credentials, the SSO session has expired or is invalid"), true},
 		{"token expired message", errors.New("refresh cached SSO token failed, unable to refresh SSO token, token has expired"), true},
 		{"cached token", errors.New("cached SSO token is expired, or not present, and cannot be refreshed"), true},
+		// sso-session profiles: the token provider's errors arrive unwrapped.
+		{"refresh rejected", fmt.Errorf("get identity: %w", fmt.Errorf("refresh cached SSO token failed, %w", fmt.Errorf("unable to refresh SSO token, %w", &smithy.GenericAPIError{Code: "InvalidGrantException"}))), true},
+		{"never logged in", errors.New("failed to read cached SSO token file, open /home/u/.aws/sso/cache/x.json: no such file or directory"), true},
 		{"access denied", &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized"}, false},
 		{"other", errors.New("pipeline not found"), false},
 	}

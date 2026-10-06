@@ -347,3 +347,33 @@ func TestHistoryActionPagingStopsPastTheWindow(t *testing.T) {
 		t.Errorf("ListActionExecutions calls = %d, want 1", len(f.actionInputs))
 	}
 }
+
+func TestHistoryRetriedStageIsOneDeploy(t *testing.T) {
+	f := &fakePipeline{
+		execs: &codepipeline.ListPipelineExecutionsOutput{PipelineExecutionSummaries: []types.PipelineExecutionSummary{
+			execSummary("exec5", types.PipelineExecutionStatusSucceeded, allRevs("eee")...),
+		}},
+		// A stage retry re-runs the action under the same execution ID.
+		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
+			{
+				PipelineExecutionId: awssdk.String("exec5"), ActionExecutionId: awssdk.String("exec5-deploy-2"),
+				StageName: awssdk.String("Production"), ActionName: awssdk.String("deploy"),
+				Status: types.ActionExecutionStatusSucceeded, StartTime: at(12), LastUpdateTime: at(15),
+			},
+			{
+				PipelineExecutionId: awssdk.String("exec5"), ActionExecutionId: awssdk.String("exec5-deploy-1"),
+				StageName: awssdk.String("Production"), ActionName: awssdk.String("deploy"),
+				Status: types.ActionExecutionStatusFailed, StartTime: at(8), LastUpdateTime: at(10),
+			},
+		}}},
+	}
+	got, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, StageSpec{Stage: "Production", DeployAction: "deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod := got["Production"]
+	assertStatuses(t, prod, []string{"exec5"}, []model.DeployStatus{model.DeploySucceeded})
+	if !prod[0].FinishedAt.Equal(*at(15)) {
+		t.Errorf("FinishedAt = %v, want the retry's", prod[0].FinishedAt)
+	}
+}

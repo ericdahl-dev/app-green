@@ -48,11 +48,16 @@ func New(ctx context.Context, account, profile, region string) (*Client, error) 
 }
 
 // ssoExpiredMessages are the SDK's wordings for an SSO session that needs a
-// new `aws sso login`, for errors that arrive without the typed error.
+// new `aws sso login`, for errors that arrive without the typed error. With
+// an sso-session profile the token provider's errors are not wrapped in
+// ssocreds.InvalidTokenError, so a failed refresh or a missing cached token
+// is only visible in the message.
 var ssoExpiredMessages = []string{
 	"the sso session has expired",
 	"token has expired",
 	"cached sso token is expired",
+	"refresh cached sso token failed",
+	"failed to read cached sso token file",
 }
 
 // IsSSOExpired reports whether err means the profile's SSO session has
