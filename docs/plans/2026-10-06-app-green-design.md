@@ -235,11 +235,11 @@ last data, marked stale), and expired AWS SSO (header names the command:
 
 ## Build order
 
-0. **Spike (about a day).** A throwaway command in app-green that, for one
-   ticket, lists its merged PRs, finds each environment's deployed SHA from
-   action executions, and runs the compare. Check it on a squash merge and a
-   rollback. Record the response shapes for synthetic fixtures. Stop and
-   revise this design if the linking does not hold.
+0. **Spike. Done 2026-10-06: the linking holds.** See
+   `2026-10-06-linking-spike.md`. It adds: exact SHA match before compare,
+   stacked PRs linked through the PR that reached `main`, and approval waits
+   as a common stage. Rollbacks had no real cases; synthetic fixtures cover
+   them.
 1. Model, `link` and `rules` with table tests.
 2. Adapters and `resolver`, read-only (Jira copy, new GitHub query, AWS
    action executions, ECS health).
