@@ -21,7 +21,7 @@ purpose (fixtures are synthetic only).
 | Superseded execution | Its merge commit compares `ahead` against the next succeeded execution's commit, so it still resolves as deployed |
 | Other sources | Infra-only changes start runs that redeploy the same AppCode SHA. Harmless: the SHA is already linked |
 | Rollbacks | None in the last 100 executions of either account. Covered by synthetic fixtures only |
-| Failed / cancelled runs | Present (mostly in stage-acct). Need a red flag only when the failed run carries a commit from a live Chain |
+| Failed / canceled runs | Present (mostly in stage-acct). Need a red flag only when the failed run carries a commit from a live Chain |
 
 ## Rules this adds to the design
 
