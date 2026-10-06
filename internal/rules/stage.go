@@ -13,15 +13,19 @@ import "github.com/ericdahl-dev/app-green/internal/model"
 // Deployed. Unknown and failed slots never advance the stage; flags report
 // what is wrong.
 func Stage(c model.Chain) model.Stage {
-	if len(c.PRs) == 0 {
-		return model.StageStarted
-	}
-	stackPending := false
+	live, stackPending := 0, false
 	for _, p := range c.PRs {
+		if p.State == model.PRClosed {
+			continue // closed without merging: not part of the work
+		}
+		live++
 		if p.State == model.PROpen {
 			return model.StagePROpen
 		}
 		stackPending = stackPending || p.StackPending
+	}
+	if live == 0 {
+		return model.StageStarted
 	}
 	if stackPending {
 		// Merged into a stack branch that has not reached the default branch:

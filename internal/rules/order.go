@@ -54,17 +54,26 @@ func prodSince(c model.Chain) (since time.Time, ok bool) {
 }
 
 // compareKeys orders ticket keys by project, then by number: ABC-9, ABC-10,
-// XY-2. A key without a numeric suffix compares as plain text.
+// XY-2. Keys without a numeric suffix sort after those with one, and plain
+// text breaks every remaining tie (ABC-01 before ABC-1), so the order is total.
 func compareKeys(a, b string) int {
 	ap, an, aok := splitKey(a)
 	bp, bn, bok := splitKey(b)
-	if !aok || !bok {
-		return strings.Compare(a, b)
+	if aok != bok {
+		if aok {
+			return -1
+		}
+		return 1
 	}
-	if c := strings.Compare(ap, bp); c != 0 {
-		return c
+	if aok {
+		if c := strings.Compare(ap, bp); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(an, bn); c != 0 {
+			return c
+		}
 	}
-	return cmp.Compare(an, bn)
+	return strings.Compare(a, b)
 }
 
 func splitKey(k string) (project string, n int, ok bool) {

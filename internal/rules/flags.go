@@ -16,7 +16,9 @@ type Thresholds struct {
 }
 
 // Flags returns c's flags, worst level first, then in FlagKind order.
-// c.Stage must already be set (call Stage first).
+// c.Stage must already be set (call Stage first). Each flag's PR or Slot
+// points into the backing arrays of c.PRs or c.Slots, so it aliases the
+// caller's chain; copy the chain's slices first if they will change.
 func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 	var fs []model.Flag
 	add := func(l model.Level, k model.FlagKind, reason string, pr *model.PR, s *model.EnvSlot) {
@@ -44,7 +46,7 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			continue
 		}
 		switch {
-		case p.Checks == model.ChecksFailing:
+		case checksFailing(p.Checks):
 			add(model.Red, model.FlagCheckFailed, fmt.Sprintf("PR #%d %s failing", p.Number, checkNames(p.Failing)), p, nil)
 		case p.Review == model.ReviewChangesRequested:
 			add(model.Red, model.FlagChangesRequested, fmt.Sprintf("PR #%d changes requested", p.Number), p, nil)
@@ -105,4 +107,14 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// checksFailing treats every state other than passing, pending or none as a
+// failure: GitHub also sends ERROR and EXPECTED, and neither is green.
+func checksFailing(s model.ChecksState) bool {
+	switch s {
+	case model.ChecksPassing, model.ChecksPending, model.ChecksNone:
+		return false
+	}
+	return true
 }

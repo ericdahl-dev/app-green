@@ -31,6 +31,8 @@ func TestFlags(t *testing.T) {
 		{"an open PR with checks running and a reviewer needs nothing", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPending, Reviewers: 1, OpenedAt: now}}}, nil},
 		{"a failing check flags the PR", model.Chain{PRs: []model.PR{failing}}, []model.FlagKind{model.FlagCheckFailed}},
 		{"a failing code scan flags the PR like any check", model.Chain{PRs: []model.PR{scanning}}, []model.FlagKind{model.FlagCheckFailed}},
+		{"checks in any other state (EXPECTED, ERROR) count as failing, even when approved", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: "EXPECTED", Review: model.ReviewApproved, Reviewers: 1}}},
+			[]model.FlagKind{model.FlagCheckFailed}},
 		{"requested changes flag the PR", model.Chain{PRs: []model.PR{{State: model.PROpen, Review: model.ReviewChangesRequested, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagChangesRequested}},
 		{"an approved, green PR that is not merged is ready to merge", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1}}},
@@ -66,6 +68,11 @@ func TestFlags(t *testing.T) {
 			{Env: otherProd, State: model.SlotDeployed, Health: model.Health{Known: true, Desired: 2}}}}, nil},
 		{"a deploy status that cannot be decided is flagged", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotUnknown}}},
 			[]model.FlagKind{model.FlagDeployUnknown}},
+		{"an unknown deploy status on a test Env is flagged too", model.Chain{Slots: []model.EnvSlot{{Env: testEnv, Applies: true, State: model.SlotUnknown}}},
+			[]model.FlagKind{model.FlagDeployUnknown}},
+		{"awaiting approval comes before deploy unknown", model.Chain{Slots: []model.EnvSlot{
+			{Env: testEnv, Applies: true, State: model.SlotUnknown}, {Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}},
+			[]model.FlagKind{model.FlagAwaitingApproval, model.FlagDeployUnknown}},
 	}
 	for _, c := range cases {
 		if got := kinds(rules.Flags(c.c, now, th)); !slices.Equal(got, c.want) {
