@@ -10,7 +10,8 @@ import "github.com/ericdahl-dev/app-green/internal/model"
 // (the Env deploys one of the chain's merged repos) count. In prod means every
 // applicable prod slot is Deployed; awaiting prod means at least one is
 // Deployed, awaiting approval or in progress; in test means a test slot is
-// Deployed. Unknown and failed slots never advance the stage; flags report
+// Deployed. A chain with a merged repo no configured Env deploys (see
+// unclaimedRepos) caps at awaiting prod. Unknown and failed slots never advance the stage; flags report
 // what is wrong.
 func Stage(c model.Chain) model.Stage {
 	live, stackPending := 0, false
@@ -54,6 +55,10 @@ func Stage(c model.Chain) model.Stage {
 		}
 	}
 	switch {
+	case prod > 0 && prodDeployed == prod && len(unclaimedRepos(c)) > 0:
+		// Every prod Env has it, but a merged repo is deployed nowhere this
+		// app watches (see unclaimedRepos): not in prod.
+		return model.StageAwaitingProd
 	case prod > 0 && prodDeployed == prod:
 		return model.StageInProd
 	case prodMoving:

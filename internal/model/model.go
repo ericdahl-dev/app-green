@@ -101,7 +101,9 @@ type PR struct {
 	// Stranded is set by link on a merged PR whose commits will never reach
 	// DefaultBranch: it merged into a branch whose own PR had already merged,
 	// or into a branch with no PR. A stranded PR is StackPending too. A PR
-	// whose base branch's PR is still open is waiting, not stranded.
+	// whose base branch's PR is still open is waiting, not stranded. Callers
+	// must pass the PR for each base branch (any author) or Stranded can be a
+	// false red.
 	Stranded bool
 }
 

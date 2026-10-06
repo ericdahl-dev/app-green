@@ -77,3 +77,20 @@ func TestStage(t *testing.T) {
 		}
 	}
 }
+
+func TestStageUnclaimedRepoCapsAtAwaitingProd(t *testing.T) {
+	// acme/app is deployed in every prod Env, but acme/other is merged and no
+	// configured Env deploys it: the chain is not in prod.
+	c := model.Chain{PRs: []model.PR{
+		{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"},
+		{Repo: "acme/other", State: model.PRMerged, EffectiveSHA: "b"},
+	}, Slots: []model.EnvSlot{slot(testEnv, model.SlotDeployed), slot(prodEnv, model.SlotDeployed)}}
+	if got := rules.Stage(c); got != model.StageAwaitingProd {
+		t.Errorf("Stage = %v, want %v: acme/other is deployed nowhere", got, model.StageAwaitingProd)
+	}
+	// With no Env.Repos anywhere (history fallback) rules cannot tell: in prod.
+	c.Slots[0].Env.Repos, c.Slots[1].Env.Repos = nil, nil
+	if got := rules.Stage(c); got != model.StageInProd {
+		t.Errorf("Stage = %v, want %v in history-fallback mode", got, model.StageInProd)
+	}
+}
