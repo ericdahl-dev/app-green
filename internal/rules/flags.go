@@ -62,8 +62,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Yellow, model.FlagStaleReview, fmt.Sprintf("PR #%d no review %s", p.Number, days(now.Sub(p.OpenedAt))), p, nil)
 		}
 	}
-	if r := partialProd(c, now, th); r != "" {
-		add(model.Yellow, model.FlagPartialProd, r, nil, nil)
+	if r, s := partialProd(c, now, th); r != "" {
+		add(model.Yellow, model.FlagPartialProd, r, nil, s)
 	}
 	if r := statusMismatch(c, now, th); r != "" {
 		add(model.Yellow, model.FlagStatusMismatch, r, nil, nil)
@@ -78,21 +78,26 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 }
 
 // partialProd explains a chain live in some applicable prod Envs but not all,
-// once the earliest of those went live more than th.PartialProd ago. Deployed
-// slots with no time are skipped; with no times at all there is no flag.
-func partialProd(c model.Chain, now time.Time, th Thresholds) string {
+// once the earliest of those went live more than th.PartialProd ago, and
+// returns the first applicable prod slot (in Env order) that does not have it.
+// Deployed slots with no time are skipped; with no times at all there is no
+// flag.
+func partialProd(c model.Chain, now time.Time, th Thresholds) (string, *model.EnvSlot) {
 	if th.PartialProd <= 0 || c.Stage != model.StageAwaitingProd {
-		return ""
+		return "", nil
 	}
 	var live []string
 	var earliest time.Time
-	missing := false
-	for _, s := range c.Slots {
+	var missing *model.EnvSlot
+	for i := range c.Slots {
+		s := &c.Slots[i]
 		if !s.Applies || !s.Env.Prod {
 			continue
 		}
 		if s.State != model.SlotDeployed {
-			missing = true
+			if missing == nil {
+				missing = s
+			}
 			continue
 		}
 		live = append(live, s.Env.Account)
@@ -100,10 +105,10 @@ func partialProd(c model.Chain, now time.Time, th Thresholds) string {
 			earliest = s.At
 		}
 	}
-	if !missing || len(live) == 0 || earliest.IsZero() || now.Sub(earliest) <= th.PartialProd {
-		return ""
+	if missing == nil || len(live) == 0 || earliest.IsZero() || now.Sub(earliest) <= th.PartialProd {
+		return "", nil
 	}
-	return "live in " + strings.Join(live, ", ") + " only"
+	return "live in " + strings.Join(live, ", ") + " only", missing
 }
 
 func statusMismatch(c model.Chain, now time.Time, th Thresholds) string {

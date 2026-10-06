@@ -161,3 +161,13 @@ func TestPartialProdIsNotFlaggedTooSoonOrWithoutData(t *testing.T) {
 		}
 	}
 }
+
+func TestPartialProdFlagTargetsTheFirstMissingProdEnv(t *testing.T) {
+	c := partialProd(now.Add(-5 * time.Hour))
+	third := model.Env{Account: "c", Stage: "Production", Prod: true}
+	c.Slots = append(c.Slots, model.EnvSlot{Env: third, Applies: true, State: model.SlotNotYet})
+	fs := rules.Flags(c, now, rules.Thresholds{PartialProd: 4 * time.Hour})
+	if len(fs) != 1 || fs[0].Slot == nil || fs[0].Slot.Env.ID() != otherProd.ID() {
+		t.Fatalf("flags %+v, want one partial prod flag targeting %s, the first prod Env without it", fs, otherProd.ID())
+	}
+}
