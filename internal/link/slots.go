@@ -1,18 +1,22 @@
 package link
 
 import (
+	"slices"
 	"time"
 
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
 // Slot decides where prs stand in one Env right now. Only merged PRs in a
-// repo this Env deploys count; open and closed PRs never hold a slot back. A
-// merged PR that is StackPending or has no EffectiveSHA (not on the default
-// branch yet, or malformed input) counts as SlotNotYet. The chain's slot is
-// its least advanced PR (see rank; Failed is the least advanced of all); for
-// ties, the latest Deployed time and the newest AwaitingApproval deploy win.
-// Applies is set when at least one merged PR is in a repo this Env deploys.
+// repo this Env deploys count (Env.Repos when config set it, else the repos in
+// its history); open and closed PRs never hold a slot back. A merged PR that
+// is StackPending or has no EffectiveSHA (not on the default branch yet, or
+// malformed input) counts as SlotNotYet. With Env.Repos set, a PR whose repo
+// no deploy in the history carries counts as SlotUnknown. The chain's slot is
+// its least advanced PR (see rank; Failed and RolledBack are the least
+// advanced); for ties, the latest Deployed time and the newest
+// AwaitingApproval deploy win. Applies is set when at least one merged PR is
+// in a repo this Env deploys.
 func Slot(prs []model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlot {
 	slot := model.EnvSlot{Env: h.Env, Health: h.Health, State: model.SlotNotYet}
 	var results []model.EnvSlot
@@ -24,6 +28,12 @@ func Slot(prs []model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSl
 			// Merged, but not on the default branch yet (or malformed input):
 			// it holds the chain back.
 			results = append(results, model.EnvSlot{Env: h.Env, State: model.SlotNotYet})
+			continue
+		}
+		if !historyCarries(h, p.Repo) {
+			// Config says this Env deploys the repo, but no deploy in the
+			// history carries it: the history is missing or truncated.
+			results = append(results, model.EnvSlot{Env: h.Env, State: model.SlotUnknown})
 			continue
 		}
 		results = append(results, slotFor(p, h, cmp))
@@ -60,7 +70,17 @@ func behind(r, worst model.EnvSlot) bool {
 	return false
 }
 
+// deploysRepo reports whether h's Env deploys repo: from Env.Repos when
+// config set it, else from the repos seen in its deploys.
 func deploysRepo(h model.EnvHistory, repo string) bool {
+	if len(h.Env.Repos) > 0 {
+		return slices.Contains(h.Env.Repos, repo)
+	}
+	return historyCarries(h, repo)
+}
+
+// historyCarries reports whether any deploy in h carries repo.
+func historyCarries(h model.EnvHistory, repo string) bool {
 	for _, d := range h.Deploys {
 		if _, ok := d.Revisions[repo]; ok {
 			return true
@@ -70,10 +90,11 @@ func deploysRepo(h model.EnvHistory, repo string) bool {
 }
 
 // rank orders states from least to most advanced for "worst of" decisions.
-// Failed ranks lowest so a real failure is never hidden behind Unknown.
+// Failed and RolledBack rank lowest so a real failure is never hidden behind
+// Unknown.
 func rank(s model.SlotState) int {
 	switch s {
-	case model.SlotFailed:
+	case model.SlotFailed, model.SlotRolledBack:
 		return 0
 	case model.SlotUnknown:
 		return 1
@@ -98,8 +119,10 @@ func rank(s model.SlotState) int {
 // older exact success does not count when N does not contain the PR (a
 // rollback). Otherwise the newest non-success run that contains the PR decides
 // (failed, in progress, awaiting approval): exact SHA, or by compare for runs
-// newer than N. With no such run: Unknown if N's compare could not answer,
-// else NotYet.
+// newer than N. When N does not contain the PR but an older success carried
+// its exact SHA, the slot is RolledBack (Deploy and At are N's) unless a run
+// newer than N contains it. With no such run: Unknown if N's compare could not
+// answer, else NotYet.
 func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlot {
 	s := model.EnvSlot{Env: h.Env, SHA: p.EffectiveSHA}
 	// 1. The PR's oldest exact-SHA success, where liveSince stops.
@@ -117,7 +140,7 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 		}
 		return cmp(p.Repo, p.EffectiveSHA, d.Revisions[p.Repo])
 	}
-	unknown := false
+	unknown, rolledBack := false, false
 	ni := newestSuccess(h, p.Repo)
 	if ni >= 0 {
 		n := &h.Deploys[ni]
@@ -128,21 +151,32 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 			return s
 		case model.InclusionUnknown:
 			unknown = true
+		case model.NotIncluded:
+			// N is the newest success, so an exact success for the PR is older:
+			// it was live, and N replaced it.
+			rolledBack = firstExact != nil
 		}
 	}
 	// 3. Not running now: the newest non-success run that contains the PR
 	//    decides. A run contains it by exact SHA, or, when it is newer than N,
 	//    by compare (a newer in-flight run supersedes an old failure).
 	var pending *model.Deploy
+	pi := -1
 	for i := range h.Deploys {
 		d := &h.Deploys[i]
 		if d.Status == model.DeploySucceeded || d.Revisions[p.Repo] == "" {
 			continue
 		}
 		if d.Revisions[p.Repo] == p.EffectiveSHA || ((ni < 0 || i < ni) && contains(d) == model.Included) {
-			pending = d
+			pending, pi = d, i
 			break
 		}
+	}
+	if rolledBack && (pending == nil || pi > ni) {
+		// Only a run newer than the rollback can supersede it.
+		s.State, s.Deploy, s.At = model.SlotRolledBack, &h.Deploys[ni], h.Deploys[ni].FinishedAt
+		s.SHA = h.Deploys[ni].Revisions[p.Repo]
+		return s
 	}
 	if pending == nil && unknown {
 		s.State = model.SlotUnknown

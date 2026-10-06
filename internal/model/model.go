@@ -84,6 +84,11 @@ type Env struct {
 	Order    int    // position in config; higher is further along
 	Prod     bool
 	ReadOnly bool // profile cannot approve
+	// Repos are the lowercased "owner/name" repos this Env deploys, filled
+	// from config. When set, link trusts it over what history shows; when
+	// empty, link falls back to the repos seen in the Env's deploys. Env is
+	// not comparable with == because of this field; compare ID() instead.
+	Repos []string
 }
 
 func (e Env) ID() string { return e.Account + "/" + e.Pipeline + "/" + e.Stage }
@@ -132,10 +137,11 @@ const (
 	SlotInProgress
 	SlotFailed
 	SlotDeployed
-	SlotUnknown // a compare call failed or returned 404
+	SlotUnknown    // a compare call failed or returned 404
+	SlotRolledBack // was live, then a newer deploy without it replaced it
 )
 
-var slotStateNames = [...]string{"not yet", "awaiting approval", "in progress", "failed", "deployed", "unknown"}
+var slotStateNames = [...]string{"not yet", "awaiting approval", "in progress", "failed", "deployed", "unknown", "rolled back"}
 
 func (s SlotState) String() string {
 	if s < 0 || int(s) >= len(slotStateNames) {
@@ -192,10 +198,12 @@ type FlagKind int
 // Order within a level is the order of these constants (design: Flags).
 const (
 	FlagPipelineFailed FlagKind = iota
+	FlagRolledBack
 	FlagUnhealthy
 	FlagCheckFailed
 	FlagChangesRequested
 	FlagAwaitingApproval
+	FlagPartialProd // live in some prod Envs, not all, for too long
 	FlagReadyToMerge
 	FlagStaleReview
 	FlagStatusMismatch
@@ -204,10 +212,12 @@ const (
 
 var flagKindNames = [...]string{
 	"pipeline failed",
+	"rolled back",
 	"unhealthy",
 	"check failed",
 	"changes requested",
 	"awaiting approval",
+	"partial prod",
 	"ready to merge",
 	"stale review",
 	"status mismatch",

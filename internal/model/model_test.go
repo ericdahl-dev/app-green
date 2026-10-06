@@ -32,7 +32,7 @@ func TestStageString(t *testing.T) {
 }
 
 func TestSlotStateString(t *testing.T) {
-	for s := model.SlotNotYet; s <= model.SlotUnknown; s++ {
+	for s := model.SlotNotYet; s <= model.SlotRolledBack; s++ {
 		if got := s.String(); got == "" || strings.HasPrefix(got, "SlotState(") {
 			t.Errorf("SlotState %d has no label: %q", int(s), got)
 		}
@@ -87,5 +87,20 @@ func TestFlagDeployUnknownIsLastAndLabeled(t *testing.T) {
 	}
 	if got := model.FlagDeployUnknown.String(); got != "deploy unknown" {
 		t.Errorf("FlagDeployUnknown.String() = %q, want %q", got, "deploy unknown")
+	}
+}
+
+func TestRolledBackLabels(t *testing.T) {
+	if model.SlotRolledBack <= model.SlotUnknown || model.SlotRolledBack.String() != "rolled back" {
+		t.Errorf("SlotRolledBack = %d %q, want after SlotUnknown, labeled %q", model.SlotRolledBack, model.SlotRolledBack, "rolled back")
+	}
+	if model.FlagRolledBack != model.FlagPipelineFailed+1 || model.FlagRolledBack.String() != "rolled back" {
+		t.Errorf("FlagRolledBack = %d %q, want right after FlagPipelineFailed, labeled %q", model.FlagRolledBack, model.FlagRolledBack, "rolled back")
+	}
+}
+
+func TestFlagPartialProdFollowsAwaitingApproval(t *testing.T) {
+	if model.FlagPartialProd != model.FlagAwaitingApproval+1 || model.FlagPartialProd.String() != "partial prod" {
+		t.Errorf("FlagPartialProd = %d %q, want right after FlagAwaitingApproval, labeled %q", model.FlagPartialProd, model.FlagPartialProd, "partial prod")
 	}
 }

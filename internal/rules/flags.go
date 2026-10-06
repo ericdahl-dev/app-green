@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ericdahl-dev/app-green/internal/model"
@@ -13,6 +14,7 @@ type Thresholds struct {
 	StaleReview time.Duration // no review for this long → yellow
 	DoneGrace   time.Duration // Done but not in prod for this long → yellow
 	FadeAfter   time.Duration // a clean row in prod this long drops out
+	PartialProd time.Duration // live in some prod Envs, not all, this long → yellow
 }
 
 // Flags returns c's flags, worst level first, then in FlagKind order.
@@ -32,6 +34,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 		switch {
 		case s.State == model.SlotFailed:
 			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s failed", s.Env.Account, s.Env.Stage), nil, s)
+		case s.State == model.SlotRolledBack:
+			add(model.Red, model.FlagRolledBack, fmt.Sprintf("%s %s rolled back", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotDeployed && !s.Health.OK():
 			add(model.Red, model.FlagUnhealthy, fmt.Sprintf("%s %s %d/%d healthy", s.Env.Account, s.Env.Stage, s.Health.Healthy, s.Health.Desired), nil, s)
 		case s.State == model.SlotAwaitingApproval:
@@ -58,6 +62,9 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Yellow, model.FlagStaleReview, fmt.Sprintf("PR #%d no review %s", p.Number, days(now.Sub(p.OpenedAt))), p, nil)
 		}
 	}
+	if r := partialProd(c, now, th); r != "" {
+		add(model.Yellow, model.FlagPartialProd, r, nil, nil)
+	}
 	if r := statusMismatch(c, now, th); r != "" {
 		add(model.Yellow, model.FlagStatusMismatch, r, nil, nil)
 	}
@@ -70,14 +77,43 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 	return fs
 }
 
+// partialProd explains a chain live in some applicable prod Envs but not all,
+// once the earliest of those went live more than th.PartialProd ago. Deployed
+// slots with no time are skipped; with no times at all there is no flag.
+func partialProd(c model.Chain, now time.Time, th Thresholds) string {
+	if th.PartialProd <= 0 || c.Stage != model.StageAwaitingProd {
+		return ""
+	}
+	var live []string
+	var earliest time.Time
+	missing := false
+	for _, s := range c.Slots {
+		if !s.Applies || !s.Env.Prod {
+			continue
+		}
+		if s.State != model.SlotDeployed {
+			missing = true
+			continue
+		}
+		live = append(live, s.Env.Account)
+		if !s.At.IsZero() && (earliest.IsZero() || s.At.Before(earliest)) {
+			earliest = s.At
+		}
+	}
+	if !missing || len(live) == 0 || earliest.IsZero() || now.Sub(earliest) <= th.PartialProd {
+		return ""
+	}
+	return "live in " + strings.Join(live, ", ") + " only"
+}
+
 func statusMismatch(c model.Chain, now time.Time, th Thresholds) string {
 	since := c.Ticket.StatusSince
 	if since.IsZero() {
 		since = c.Ticket.Updated // a safe stand-in: it is never older than the status change
 	}
 	switch {
-	case c.Ticket.StatusCategory == "In Progress" && c.Stage >= model.StageMerged:
-		return "Jira still " + orDefault(c.Ticket.Status, "In Progress") + ", PR merged"
+	case (c.Ticket.StatusCategory == "In Progress" || c.Ticket.StatusCategory == "To Do") && c.Stage >= model.StageMerged:
+		return "Jira still " + orDefault(c.Ticket.Status, c.Ticket.StatusCategory) + ", PR merged"
 	case c.Ticket.StatusCategory == "Done" && c.Stage != model.StageInProd &&
 		!since.IsZero() && now.Sub(since) > th.DoneGrace:
 		return "Jira Done, not in prod"

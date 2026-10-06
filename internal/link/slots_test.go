@@ -150,7 +150,7 @@ func TestSlotCompareSkipsDeployWithoutRepo(t *testing.T) {
 	}
 }
 
-func TestSlotRollbackIsNotDeployed(t *testing.T) {
+func TestSlotRollbackIsRolledBack(t *testing.T) {
 	// aaaa deployed, then a rollback deployed zzzz, which does not contain it.
 	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
 		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
@@ -162,8 +162,8 @@ func TestSlotRollbackIsNotDeployed(t *testing.T) {
 		t.Fatalf("unexpected compare %s...%s", base, head)
 		return model.InclusionUnknown
 	}
-	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotNotYet {
-		t.Errorf("slot = %+v, want not yet after rollback", s)
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotRolledBack {
+		t.Errorf("slot = %+v, want rolled back: aaaa was live and zzzz replaced it", s)
 	}
 }
 
@@ -398,5 +398,75 @@ func TestSlotAppliesOnlyWhenAMergedPRIsInARepoTheEnvDeploys(t *testing.T) {
 	pending := model.PR{Repo: "acme/app", State: model.PRMerged, StackPending: true}
 	if s := link.Slot([]model.PR{pending}, h, noCompare(t)); !s.Applies {
 		t.Errorf("slot = %+v, want Applies true: a stack-pending acme/app PR still belongs to this Env", s)
+	}
+}
+
+func TestSlotNewerRunSupersedesRollback(t *testing.T) {
+	// aaaa was live, zzzz rolled it back, and a newer run of aaaa is in flight.
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeployInProgress, "aaaa", t0.Add(time.Hour)),
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "zzzz" {
+			return model.NotIncluded
+		}
+		t.Fatalf("unexpected compare %s...%s", base, head)
+		return model.InclusionUnknown
+	}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotInProgress {
+		t.Errorf("slot = %+v, want in progress: the newer aaaa run supersedes the rollback", s)
+	}
+}
+
+func TestSlotOlderFailureDoesNotHideRollback(t *testing.T) {
+	// aaaa failed once, then went live, then zzzz rolled it back.
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
+		dep(model.DeployFailed, "aaaa", t0.Add(-3*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "zzzz" {
+			return model.NotIncluded
+		}
+		t.Fatalf("unexpected compare %s...%s", base, head)
+		return model.InclusionUnknown
+	}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotRolledBack {
+		t.Errorf("slot = %+v, want rolled back: the failure is older than the rollback", s)
+	}
+}
+
+func TestSlotRolledBackWinsOverUnknown(t *testing.T) {
+	// aaaa was rolled back by zzzz; bbbb's compare against zzzz cannot answer.
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "zzzz" {
+			return model.NotIncluded
+		}
+		return model.InclusionUnknown
+	}
+	if s := link.Slot([]model.PR{merged("bbbb"), merged("aaaa")}, h, cmp); s.State != model.SlotRolledBack {
+		t.Errorf("slot = %+v, want rolled back: a real rollback is never hidden behind unknown", s)
+	}
+}
+
+func TestSlotConfiguredRepoWithNoHistoryIsUnknown(t *testing.T) {
+	env := prod
+	env.Repos = []string{"acme/app"}
+	s := link.Slot([]model.PR{merged("aaaa")}, model.EnvHistory{Env: env}, noCompare(t))
+	if !s.Applies || s.State != model.SlotUnknown {
+		t.Errorf("slot = %+v, want Applies true and unknown: config says this Env deploys acme/app but history has none", s)
+	}
+}
+
+func TestSlotConfiguredReposOverrideHistory(t *testing.T) {
+	env := prod
+	env.Repos = []string{"acme/svc"}
+	h := model.EnvHistory{Env: env, Deploys: []model.Deploy{dep(model.DeploySucceeded, "aaaa", t0)}}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, noCompare(t)); s.Applies || s.State != model.SlotNotYet {
+		t.Errorf("slot = %+v, want Applies false and not yet: config says this Env deploys acme/svc only", s)
 	}
 }
