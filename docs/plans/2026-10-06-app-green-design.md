@@ -125,14 +125,22 @@ Environments are listed in order; pipeline sources are discovered.
 |---|---|
 | Started | Ticket In Progress, no PR |
 | PR open | At least one open PR |
-| Merged | All PRs merged, not in any environment yet |
-| In test | Merge commit deployed by a Test stage |
-| Awaiting prod | In test, Production not yet run or waiting for approval |
-| In prod | Merge commit deployed by a Production stage and healthy; fades after ~24h |
+| Merged | All PRs merged, not in any environment yet (or a PR is still in an unmerged stack) |
+| In test | Merge commit running in a Test stage |
+| Awaiting prod | Running in prod somewhere, or prod waiting for approval / in progress, but not yet in every prod environment |
+| In prod | Running in **every** applicable Production environment; fades after ~24h with no flags |
 
-With PRs in mixed states, the row shows the least advanced PR's stage. With
-two accounts, the row shows the furthest stage reached in any account; the
-detail screen shows all four environment slots.
+With PRs in mixed states, the row shows the least advanced PR's stage. Closed
+PRs are ignored. "Running" means the environment's newest successful deploy
+contains the change (exact commit, else GitHub compare); an older deploy that
+has since been rolled back does not count. A prod deploy with an unhealthy
+service is still "in prod", with a red flag. The detail screen shows every
+environment slot.
+
+An environment applies to a chain when it deploys one of the chain's repos:
+from the environment's `repos` list in config, or, when that is empty, from
+its deploy history. A configured environment with no history for the repo
+shows "deploy unknown", never a silent pass.
 
 ## Flags
 
@@ -140,18 +148,29 @@ Within each color, flags have a fixed order (listed top to bottom below). A
 row shows its first flag; the detail screen lists all of them.
 
 Red, needs me now:
-1. A pipeline stage failed or rolled back for a commit in this Chain
-2. ECS unhealthy after this Chain's deploy (fewer healthy tasks than desired, crash loop)
-3. A check failed on my PR (`f` re-run; code-scanning results are shown as an
-   alert with `o` open, since a re-run cannot fix them)
-4. Changes requested on my PR
+1. A pipeline stage failed for a commit in this Chain (a failure is superseded
+   by a newer run that contains the change)
+2. Rolled back: the change was running, and the newest deploy no longer has it
+3. ECS unhealthy after this Chain's deploy (fewer healthy tasks than desired, crash loop)
+4. A check failed on my PR, including GitHub's ERROR and EXPECTED states (`f`
+   re-run; code-scanning results are shown as an alert with `o` open, since a
+   re-run cannot fix them)
+5. Changes requested on my PR
 
 Yellow, waiting:
 1. Pipeline paused for manual approval (`a` / `x`)
-2. PR approved and green but not merged
-3. In review with no reviewer, or no review for `stale_review_after` (default 2d)
-4. Jira status disagrees with reality: In Progress but merged, or Done but not
-   in prod after a grace period (`t`)
+2. Partial prod: running in some prod environments but not all for longer
+   than `partial_prod_after` (default 4h); targets the first missing one
+3. PR approved and green (or with no checks) but not merged
+4. In review with no reviewer, or no review for `stale_review_after` (default 2d)
+5. Jira status disagrees with reality: To Do or In Progress but merged, or
+   Done but not in prod after a grace period (`t`). A Done ticket with no
+   status-change time uses its last-updated time
+6. Deploy unknown: a compare call failed or the environment has no history
+   for the repo
+
+When one environment has both a failure and an unknown, the failure shows.
+A prod deploy with no timestamp never fades.
 
 Unlinked PRs and deploys go in a pinned "Unlinked (n)" group at the bottom,
 never silently dropped.
