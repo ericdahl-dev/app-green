@@ -1,0 +1,15 @@
+{
+  "issues": [
+    {
+      "key": "ABC-1",
+      "fields": {
+        "summary": "Add widget export",
+        "status": {"id": "3", "name": "In Progress", "statusCategory": {"id": 4, "key": "indeterminate", "name": "In Progress"}},
+        "updated": "2026-10-05T09:00:00.000-0400",
+        "statuscategorychangedate": "2026-10-01T08:30:00.000-0400"
+      }
+    }
+  ],
+  "nextPageToken": "p2",
+  "isLast": false
+}
