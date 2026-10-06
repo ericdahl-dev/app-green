@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	testEnv = model.Env{Account: "a", Stage: "Test"}
-	prodEnv = model.Env{Account: "a", Stage: "Production", Prod: true}
+	testEnv = model.Env{Account: "a", Stage: "Test", Repos: []string{"acme/app"}}
+	prodEnv = model.Env{Account: "a", Stage: "Production", Prod: true, Repos: []string{"acme/app"}}
 	// otherProd is a second prod Env, e.g. another account's pipeline.
-	otherProd = model.Env{Account: "b", Stage: "Production", Prod: true}
+	otherProd = model.Env{Account: "b", Stage: "Production", Prod: true, Repos: []string{"acme/app"}}
 )
 
 func slot(e model.Env, st model.SlotState) model.EnvSlot {
@@ -20,7 +20,7 @@ func slot(e model.Env, st model.SlotState) model.EnvSlot {
 
 func TestStage(t *testing.T) {
 	open := model.PR{State: model.PROpen}
-	merged := model.PR{State: model.PRMerged, EffectiveSHA: "a"}
+	merged := model.PR{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}
 	cases := []struct {
 		name string
 		c    model.Chain

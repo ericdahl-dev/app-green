@@ -12,10 +12,34 @@ type Ticket struct {
 	Key            string // "ABC-1"
 	Title          string
 	Status         string // display name, e.g. "Code Review"
-	StatusCategory string // "To Do" | "In Progress" | "Done"
+	StatusCategory StatusCategory
 	URL            string
 	Updated        time.Time
 	StatusSince    time.Time // when it entered Status; zero if unknown
+}
+
+// StatusCategory is Jira's statusCategory.key, which stays the same whatever
+// a site names its statuses. Adapters map statusCategory.key straight into it.
+type StatusCategory string
+
+const (
+	StatusToDo       StatusCategory = "new"
+	StatusInProgress StatusCategory = "indeterminate"
+	StatusDone       StatusCategory = "done"
+)
+
+// Label is the category's display name: "To Do", "In Progress" or "Done", or
+// the raw key for a category Jira adds later.
+func (c StatusCategory) Label() string {
+	switch c {
+	case StatusToDo:
+		return "To Do"
+	case StatusInProgress:
+		return "In Progress"
+	case StatusDone:
+		return "Done"
+	}
+	return string(c)
 }
 
 type PRState string
@@ -54,7 +78,7 @@ type Check struct {
 
 // PR is one pull request.
 type PR struct {
-	Repo          string // "owner/name", lowercased by the adapter; must equal Deploy.Revisions keys
+	Repo          string // "owner/name"; link compares repos ignoring case
 	DefaultBranch string // the branch pipelines deploy, usually "main"
 	Number        int
 	Title         string
@@ -84,10 +108,13 @@ type Env struct {
 	Order    int    // position in config; higher is further along
 	Prod     bool
 	ReadOnly bool // profile cannot approve
-	// Repos are the lowercased "owner/name" repos this Env deploys, filled
-	// from config. When set, link trusts it over what history shows; when
-	// empty, link falls back to the repos seen in the Env's deploys. Env is
-	// not comparable with == because of this field; compare ID() instead.
+	// Repos are the "owner/name" repos this Env deploys, compared ignoring
+	// case. Required in practice: phase 2 fills it from the pipeline's source
+	// actions. link trusts it over what history shows, and rules uses it to
+	// spot a merged repo no Env deploys. When empty, link falls back to the
+	// repos seen in the Env's deploys; that is a last resort, since a missing
+	// or truncated history then hides the Env's repos. Env is not comparable
+	// with == because of this field; compare ID() instead.
 	Repos []string
 }
 
@@ -102,13 +129,20 @@ const (
 	DeployAwaitingApproval DeployStatus = "AwaitingApproval"
 )
 
-// Deploy is one execution of an Env's deploy action.
+// Deploy is one pipeline execution as seen from one Env's stage, as the
+// adapter builds it: Status is the stage's deploy action status, except that
+// a run paused at the stage's approval action is DeployAwaitingApproval with
+// that action's ApprovalToken. Adapters drop Abandoned and Superseded
+// executions; they never deployed anything.
 type Deploy struct {
-	ExecutionID   string
-	Status        DeployStatus
-	Revisions     map[string]string // repo "owner/name" → commit SHA; keys lowercased by the adapter, must equal PR.Repo
-	FinishedAt    time.Time         // last update time of the action
-	ApprovalToken string            // set when Status == DeployAwaitingApproval
+	ExecutionID string
+	Status      DeployStatus
+	// Revisions maps repo "owner/name" to the commit this execution carries.
+	// link matches keys to PR.Repo ignoring case, and an empty SHA counts as
+	// not carrying the repo.
+	Revisions     map[string]string
+	FinishedAt    time.Time // last update time of the action
+	ApprovalToken string    // set when Status == DeployAwaitingApproval
 }
 
 // Health is the runtime health of an Env's service.
@@ -125,7 +159,7 @@ func (h Health) OK() bool { return !h.Known || h.Healthy >= h.Desired }
 // EnvHistory is everything the AWS adapter knows about one Env.
 type EnvHistory struct {
 	Env     Env
-	Deploys []Deploy // newest first
+	Deploys []Deploy // newest first, as the adapter returns them
 	Health  Health
 }
 

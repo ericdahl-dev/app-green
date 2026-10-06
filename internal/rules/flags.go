@@ -9,12 +9,21 @@ import (
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
-// Thresholds are the only configurable parts of the rules.
+// Thresholds are the only configurable parts of the rules. Each one at zero
+// or below turns its check off.
 type Thresholds struct {
-	StaleReview time.Duration // no review for this long → yellow
-	DoneGrace   time.Duration // Done but not in prod for this long → yellow
-	FadeAfter   time.Duration // a clean row in prod this long drops out
-	PartialProd time.Duration // live in some prod Envs, not all, this long → yellow
+	// StaleReview: an open PR with no approval this long after it opened is
+	// yellow (a PR with no reviewer at all is flagged whatever this is).
+	StaleReview time.Duration
+	// DoneGrace: a ticket Done in Jira this long (since StatusSince, else
+	// Updated) without being in prod is yellow.
+	DoneGrace time.Duration
+	// FadeAfter: a row with no flags, in prod in every applicable prod Env,
+	// drops out of the list once the last of them went live this long ago.
+	FadeAfter time.Duration
+	// PartialProd: a row live in some applicable prod Envs but not all, this
+	// long after the earliest went live, is yellow.
+	PartialProd time.Duration
 }
 
 // Flags returns c's flags, worst level first, then in FlagKind order.
@@ -62,6 +71,9 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Yellow, model.FlagStaleReview, fmt.Sprintf("PR #%d no review %s", p.Number, days(now.Sub(p.OpenedAt))), p, nil)
 		}
 	}
+	for _, repo := range unclaimedRepos(c) {
+		add(model.Yellow, model.FlagDeployUnknown, repo+" not deployed by any configured environment", nil, nil)
+	}
 	if r, s := partialProd(c, now, th); r != "" {
 		add(model.Yellow, model.FlagPartialProd, r, nil, s)
 	}
@@ -75,6 +87,36 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 		return int(a.Kind - b.Kind)
 	})
 	return fs
+}
+
+// unclaimedRepos lists, once each and in PR order, the repos of the chain's
+// merged PRs (EffectiveSHA set) that no slot's Env.Repos names, compared
+// ignoring case. Such a repo is deployed nowhere this app watches, so the
+// chain must not look done. With no Env.Repos on any slot (link fell back to
+// history) rules cannot tell which Env deploys which repo and returns nothing.
+func unclaimedRepos(c model.Chain) []string {
+	configured := false
+	for _, s := range c.Slots {
+		configured = configured || len(s.Env.Repos) > 0
+	}
+	if !configured {
+		return nil
+	}
+	var out []string
+	for _, p := range c.PRs {
+		if p.State != model.PRMerged || p.EffectiveSHA == "" {
+			continue
+		}
+		same := func(r string) bool { return strings.EqualFold(r, p.Repo) }
+		if slices.ContainsFunc(out, same) {
+			continue
+		}
+		claimed := slices.ContainsFunc(c.Slots, func(s model.EnvSlot) bool { return slices.ContainsFunc(s.Env.Repos, same) })
+		if !claimed {
+			out = append(out, p.Repo)
+		}
+	}
+	return out
 }
 
 // partialProd explains a chain live in some applicable prod Envs but not all,
@@ -117,9 +159,9 @@ func statusMismatch(c model.Chain, now time.Time, th Thresholds) string {
 		since = c.Ticket.Updated // a safe stand-in: it is never older than the status change
 	}
 	switch {
-	case (c.Ticket.StatusCategory == "In Progress" || c.Ticket.StatusCategory == "To Do") && c.Stage >= model.StageMerged:
-		return "Jira still " + orDefault(c.Ticket.Status, c.Ticket.StatusCategory) + ", PR merged"
-	case c.Ticket.StatusCategory == "Done" && c.Stage != model.StageInProd &&
+	case (c.Ticket.StatusCategory == model.StatusInProgress || c.Ticket.StatusCategory == model.StatusToDo) && c.Stage >= model.StageMerged:
+		return "Jira still " + orDefault(c.Ticket.Status, c.Ticket.StatusCategory.Label()) + ", PR merged"
+	case c.Ticket.StatusCategory == model.StatusDone && c.Stage != model.StageInProd && th.DoneGrace > 0 &&
 		!since.IsZero() && now.Sub(since) > th.DoneGrace:
 		return "Jira Done, not in prod"
 	}

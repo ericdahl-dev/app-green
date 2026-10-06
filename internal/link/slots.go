@@ -2,6 +2,7 @@ package link
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ericdahl-dev/app-green/internal/model"
@@ -9,7 +10,9 @@ import (
 
 // Slot decides where prs stand in one Env right now. Only merged PRs in a
 // repo this Env deploys count (Env.Repos when config set it, else the repos in
-// its history); open and closed PRs never hold a slot back. A merged PR that
+// its history as a last resort); repos match ignoring case, and a deploy
+// carries a repo only with a non-empty SHA for it. Open and closed PRs never
+// hold a slot back. A merged PR that
 // is StackPending or has no EffectiveSHA (not on the default branch yet, or
 // malformed input) counts as SlotNotYet. With Env.Repos set, a PR whose repo
 // no deploy in the history carries counts as SlotUnknown. The chain's slot is
@@ -74,15 +77,30 @@ func behind(r, worst model.EnvSlot) bool {
 // config set it, else from the repos seen in its deploys.
 func deploysRepo(h model.EnvHistory, repo string) bool {
 	if len(h.Env.Repos) > 0 {
-		return slices.Contains(h.Env.Repos, repo)
+		return slices.ContainsFunc(h.Env.Repos, func(r string) bool { return strings.EqualFold(r, repo) })
 	}
 	return historyCarries(h, repo)
 }
 
-// historyCarries reports whether any deploy in h carries repo.
+// revision is the SHA revs holds for repo, matching the repo ignoring case,
+// or "" when it holds none.
+func revision(revs map[string]string, repo string) string {
+	if sha, ok := revs[repo]; ok {
+		return sha
+	}
+	for k, sha := range revs {
+		if strings.EqualFold(k, repo) {
+			return sha
+		}
+	}
+	return ""
+}
+
+// historyCarries reports whether any deploy in h carries repo: holds a
+// non-empty SHA for it. Every "carries" check in this package means that.
 func historyCarries(h model.EnvHistory, repo string) bool {
 	for _, d := range h.Deploys {
-		if _, ok := d.Revisions[repo]; ok {
+		if revision(d.Revisions, repo) != "" {
 			return true
 		}
 	}
@@ -129,16 +147,16 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 	var firstExact *model.Deploy
 	for i := range h.Deploys {
 		d := &h.Deploys[i]
-		if d.Status == model.DeploySucceeded && d.Revisions[p.Repo] == p.EffectiveSHA {
+		if d.Status == model.DeploySucceeded && revision(d.Revisions, p.Repo) == p.EffectiveSHA {
 			firstExact = d // newest first, so the last one seen is the oldest
 		}
 	}
 	// 2. Does N, the newest succeeded deploy carrying p.Repo, contain the PR?
 	contains := func(d *model.Deploy) model.Inclusion {
-		if d.Revisions[p.Repo] == p.EffectiveSHA {
+		if revision(d.Revisions, p.Repo) == p.EffectiveSHA {
 			return model.Included
 		}
-		return cmp(p.Repo, p.EffectiveSHA, d.Revisions[p.Repo])
+		return cmp(p.Repo, p.EffectiveSHA, revision(d.Revisions, p.Repo))
 	}
 	unknown, rolledBack := false, false
 	ni := newestSuccess(h, p.Repo)
@@ -146,7 +164,7 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 		n := &h.Deploys[ni]
 		switch contains(n) {
 		case model.Included:
-			s.State, s.SHA, s.Deploy = model.SlotDeployed, n.Revisions[p.Repo], n
+			s.State, s.SHA, s.Deploy = model.SlotDeployed, revision(n.Revisions, p.Repo), n
 			s.At = liveSince(h, p.Repo, ni, firstExact, contains)
 			return s
 		case model.InclusionUnknown:
@@ -164,10 +182,10 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 	pi := -1
 	for i := range h.Deploys {
 		d := &h.Deploys[i]
-		if d.Status == model.DeploySucceeded || d.Revisions[p.Repo] == "" {
+		if d.Status == model.DeploySucceeded || revision(d.Revisions, p.Repo) == "" {
 			continue
 		}
-		if d.Revisions[p.Repo] == p.EffectiveSHA || ((ni < 0 || i < ni) && contains(d) == model.Included) {
+		if revision(d.Revisions, p.Repo) == p.EffectiveSHA || ((ni < 0 || i < ni) && contains(d) == model.Included) {
 			pending, pi = d, i
 			break
 		}
@@ -175,7 +193,7 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 	if rolledBack && (pending == nil || pi > ni) {
 		// Only a run newer than the rollback can supersede it.
 		s.State, s.Deploy, s.At = model.SlotRolledBack, &h.Deploys[ni], h.Deploys[ni].FinishedAt
-		s.SHA = h.Deploys[ni].Revisions[p.Repo]
+		s.SHA = revision(h.Deploys[ni].Revisions, p.Repo)
 		return s
 	}
 	if pending == nil && unknown {
@@ -183,7 +201,7 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 		return s
 	}
 	if pending != nil {
-		s.Deploy, s.At, s.SHA = pending, pending.FinishedAt, pending.Revisions[p.Repo]
+		s.Deploy, s.At, s.SHA = pending, pending.FinishedAt, revision(pending.Revisions, p.Repo)
 		switch pending.Status {
 		case model.DeployFailed:
 			s.State = model.SlotFailed
@@ -203,7 +221,7 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 // newestSuccess is the index of the newest succeeded deploy carrying repo, or -1.
 func newestSuccess(h model.EnvHistory, repo string) int {
 	for i, d := range h.Deploys {
-		if d.Status == model.DeploySucceeded && d.Revisions[repo] != "" {
+		if d.Status == model.DeploySucceeded && revision(d.Revisions, repo) != "" {
 			return i
 		}
 	}
@@ -221,7 +239,7 @@ func liveSince(h model.EnvHistory, repo string, ni int, firstExact *model.Deploy
 	}
 	for i := ni + 1; i < len(h.Deploys); i++ {
 		d := &h.Deploys[i]
-		if d.Status != model.DeploySucceeded || d.Revisions[repo] == "" {
+		if d.Status != model.DeploySucceeded || revision(d.Revisions, repo) == "" {
 			continue
 		}
 		if contains(d) != model.Included {

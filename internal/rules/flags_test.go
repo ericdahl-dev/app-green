@@ -48,16 +48,16 @@ func TestFlags(t *testing.T) {
 		{"fewer healthy tasks than desired after a deploy flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotDeployed, Health: model.Health{Known: true, Desired: 2, Healthy: 1}}}},
 			[]model.FlagKind{model.FlagUnhealthy}},
 		{"a pipeline paused for approval flags the row", model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}}, []model.FlagKind{model.FlagAwaitingApproval}},
-		{"Jira still In Progress after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: "In Progress"}, Stage: model.StageMerged,
+		{"Jira still In Progress after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusInProgress}, Stage: model.StageMerged,
 			PRs: []model.PR{{State: model.PRMerged}}}, []model.FlagKind{model.FlagStatusMismatch}},
-		{"Jira still To Do after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: "To Do", Status: "Backlog"}, Stage: model.StageMerged,
+		{"Jira still To Do after the PR merged is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusToDo, Status: "Backlog"}, Stage: model.StageMerged,
 			PRs: []model.PR{{State: model.PRMerged}}}, []model.FlagKind{model.FlagStatusMismatch}},
-		{"Done but not in prod within DoneGrace is not flagged yet", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", StatusSince: now.Add(-time.Hour)}, Stage: model.StageInTest}, nil},
-		{"Done but not in prod past DoneGrace is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", StatusSince: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
+		{"Done but not in prod within DoneGrace is not flagged yet", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-time.Hour)}, Stage: model.StageInTest}, nil},
+		{"Done but not in prod past DoneGrace is a status mismatch", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
 			[]model.FlagKind{model.FlagStatusMismatch}},
-		{"Done with no status time falls back to the ticket's last update", model.Chain{Ticket: model.Ticket{StatusCategory: "Done", Updated: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
+		{"Done with no status time falls back to the ticket's last update", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, Updated: now.Add(-3 * time.Hour)}, Stage: model.StageInTest},
 			[]model.FlagKind{model.FlagStatusMismatch}},
-		{"Done with neither a status time nor an update time is not flagged", model.Chain{Ticket: model.Ticket{StatusCategory: "Done"}, Stage: model.StageInTest}, nil},
+		{"Done with neither a status time nor an update time is not flagged", model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone}, Stage: model.StageInTest}, nil},
 		{"red flags come before yellow ones", model.Chain{PRs: []model.PR{failing},
 			Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotAwaitingApproval}}},
 			[]model.FlagKind{model.FlagCheckFailed, model.FlagAwaitingApproval}},
@@ -119,7 +119,7 @@ func TestRolledBackFlagTargetsItsSlotAtRed(t *testing.T) {
 }
 
 func TestToDoMismatchNamesTheStatus(t *testing.T) {
-	c := model.Chain{Ticket: model.Ticket{StatusCategory: "To Do", Status: "Backlog"}, Stage: model.StageInTest}
+	c := model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusToDo, Status: "Backlog"}, Stage: model.StageInTest}
 	fs := rules.Flags(c, now, rules.Thresholds{})
 	if len(fs) != 1 || fs[0].Reason != "Jira still Backlog, PR merged" {
 		t.Errorf("flags %+v, want one mismatch with reason %q", fs, "Jira still Backlog, PR merged")
@@ -128,7 +128,7 @@ func TestToDoMismatchNamesTheStatus(t *testing.T) {
 
 // partialProd is a chain live in prodEnv since at and not yet in otherProd.
 func partialProd(at time.Time) model.Chain {
-	return model.Chain{Stage: model.StageAwaitingProd, PRs: []model.PR{{State: model.PRMerged, EffectiveSHA: "a"}},
+	return model.Chain{Stage: model.StageAwaitingProd, PRs: []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}},
 		Slots: []model.EnvSlot{
 			{Env: prodEnv, Applies: true, State: model.SlotDeployed, At: at},
 			{Env: otherProd, Applies: true, State: model.SlotNotYet}}}
@@ -169,5 +169,27 @@ func TestPartialProdFlagTargetsTheFirstMissingProdEnv(t *testing.T) {
 	fs := rules.Flags(c, now, rules.Thresholds{PartialProd: 4 * time.Hour})
 	if len(fs) != 1 || fs[0].Slot == nil || fs[0].Slot.Env.ID() != otherProd.ID() {
 		t.Fatalf("flags %+v, want one partial prod flag targeting %s, the first prod Env without it", fs, otherProd.ID())
+	}
+}
+
+func TestMismatchUsesJiraStatusCategoryKeys(t *testing.T) {
+	// Adapters map Jira's stable statusCategory.key; with no status name the
+	// reason falls back to the category's display label, not the raw key.
+	c := model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusInProgress}, Stage: model.StageMerged}
+	fs := rules.Flags(c, now, rules.Thresholds{})
+	if want := "Jira still In Progress, PR merged"; len(fs) != 1 || fs[0].Reason != want {
+		t.Errorf("flags %+v, want one mismatch with reason %q", fs, want)
+	}
+	c.Ticket.StatusCategory = model.StatusToDo
+	if fs := rules.Flags(c, now, rules.Thresholds{}); len(fs) != 1 || fs[0].Reason != "Jira still To Do, PR merged" {
+		t.Errorf("flags %+v, want one mismatch naming To Do", fs)
+	}
+}
+
+func TestZeroDoneGraceDisablesTheDoneMismatch(t *testing.T) {
+	c := model.Chain{Ticket: model.Ticket{StatusCategory: model.StatusDone, StatusSince: now.Add(-72 * time.Hour)}, Stage: model.StageInTest,
+		PRs: []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}}}
+	if fs := rules.Flags(c, now, rules.Thresholds{}); len(fs) != 0 {
+		t.Errorf("flags %v, want none: DoneGrace 0 turns the check off, like the other thresholds", kinds(fs))
 	}
 }

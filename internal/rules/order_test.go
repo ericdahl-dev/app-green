@@ -41,7 +41,7 @@ func TestEvaluateSortsRedThenYellowThenNone(t *testing.T) {
 
 func TestEvaluateSortsFurthestStageFirstWithinALevel(t *testing.T) {
 	started := model.Chain{Ticket: model.Ticket{Key: "ABC-1"}}
-	inTest := model.Chain{Ticket: model.Ticket{Key: "ABC-2"}, PRs: []model.PR{{State: model.PRMerged, EffectiveSHA: "a"}},
+	inTest := model.Chain{Ticket: model.Ticket{Key: "ABC-2"}, PRs: []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}},
 		Slots: []model.EnvSlot{slot(testEnv, model.SlotDeployed)}}
 	rows := rules.Evaluate([]model.Chain{started, inTest}, now, rules.Thresholds{})
 	got := keysOf(rows)
@@ -51,7 +51,7 @@ func TestEvaluateSortsFurthestStageFirstWithinALevel(t *testing.T) {
 }
 
 func inProdSince(key string, at time.Time) model.Chain {
-	return model.Chain{Ticket: model.Ticket{Key: key}, PRs: []model.PR{{State: model.PRMerged, EffectiveSHA: "a"}},
+	return model.Chain{Ticket: model.Ticket{Key: key}, PRs: []model.PR{{Repo: "acme/app", State: model.PRMerged, EffectiveSHA: "a"}},
 		Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotDeployed, At: at}}}
 }
 
@@ -148,7 +148,7 @@ func TestEvaluateFadeCountsFromTheLatestProdDeploy(t *testing.T) {
 func TestEvaluateNeverFadesAYellowRowInProd(t *testing.T) {
 	th := rules.Thresholds{FadeAfter: 24 * time.Hour}
 	c := inProdSince("ABC-1", now.Add(-30*time.Hour))
-	c.Ticket.StatusCategory = "In Progress"
+	c.Ticket.StatusCategory = model.StatusInProgress
 	got := rules.Evaluate([]model.Chain{c}, now, th)
 	if len(got) != 1 || got[0].Level() != model.Yellow {
 		t.Errorf("rows %s, want ABC-1 kept at yellow: Jira still In Progress", describe(got))
@@ -171,5 +171,34 @@ func TestEvaluateKeyOrderIsTotal(t *testing.T) {
 	got := keysOf(rows)
 	if want := []string{"ABC-01", "ABC-1", "XY-2", "AAA"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("order %s, want %v (parseable keys first; same project and number fall back to text)", describe(rows), want)
+	}
+}
+
+func TestEvaluateFlagsAMergedRepoNoEnvDeploys(t *testing.T) {
+	// acme/app is live in prod long enough to fade, but the chain's acme/other
+	// PR is merged into a repo no configured Env deploys: it is live nowhere.
+	th := rules.Thresholds{FadeAfter: 24 * time.Hour}
+	c := inProdSince("ABC-1", now.Add(-30*time.Hour))
+	other := model.PR{Repo: "acme/other", Number: 2, State: model.PRMerged, EffectiveSHA: "b"}
+	c.PRs = append(c.PRs, other, other) // two PRs in one unclaimed repo raise one flag
+	rows := rules.Evaluate([]model.Chain{c}, now, th)
+	if len(rows) != 1 {
+		t.Fatalf("rows %s, want ABC-1 kept", describe(rows))
+	}
+	fs := rows[0].Flags
+	want := "acme/other not deployed by any configured environment"
+	if len(fs) != 1 || fs[0].Kind != model.FlagDeployUnknown || fs[0].Level != model.Yellow || fs[0].Slot != nil || fs[0].Reason != want {
+		t.Errorf("flags %+v, want one yellow deploy-unknown flag with no slot and reason %q", fs, want)
+	}
+}
+
+func TestUnclaimedRepoCheckNeedsConfiguredRepos(t *testing.T) {
+	// With no Env.Repos anywhere (history fallback), rules cannot tell which
+	// Env deploys which repo, so it raises nothing.
+	c := inProdSince("ABC-1", now.Add(-time.Hour))
+	c.Slots[0].Env.Repos = nil
+	c.PRs = append(c.PRs, model.PR{Repo: "acme/other", State: model.PRMerged, EffectiveSHA: "b"})
+	if rows := rules.Evaluate([]model.Chain{c}, now, rules.Thresholds{}); len(rows) != 1 || len(rows[0].Flags) != 0 {
+		t.Errorf("rows %s, want ABC-1 with no flags in history-fallback mode", describe(rows))
 	}
 }

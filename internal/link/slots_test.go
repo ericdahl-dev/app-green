@@ -470,3 +470,25 @@ func TestSlotConfiguredReposOverrideHistory(t *testing.T) {
 		t.Errorf("slot = %+v, want Applies false and not yet: config says this Env deploys acme/svc only", s)
 	}
 }
+
+func TestSlotRepoMatchIgnoresCase(t *testing.T) {
+	env := prod
+	env.Repos = []string{"O/R"}
+	d := model.Deploy{Status: model.DeploySucceeded, Revisions: map[string]string{"O/r": "aaaa"}, FinishedAt: t0}
+	p := model.PR{Repo: "o/r", State: model.PRMerged, MergeSHA: "aaaa", EffectiveSHA: "aaaa"}
+	s := link.Slot([]model.PR{p}, model.EnvHistory{Env: env, Deploys: []model.Deploy{d}}, noCompare(t))
+	if !s.Applies || s.State != model.SlotDeployed || s.SHA != "aaaa" {
+		t.Errorf("slot = %+v, want Applies true and deployed: repos match ignoring case", s)
+	}
+}
+
+func TestSlotEmptySHAIsNotCarried(t *testing.T) {
+	// Config says this Env deploys acme/app, but the only deploy holds an empty
+	// SHA for it: that is no evidence, so the slot is unknown, not not-yet.
+	env := prod
+	env.Repos = []string{"acme/app"}
+	h := model.EnvHistory{Env: env, Deploys: []model.Deploy{dep(model.DeploySucceeded, "", t0)}}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, noCompare(t)); !s.Applies || s.State != model.SlotUnknown {
+		t.Errorf("slot = %+v, want Applies true and unknown: an empty SHA does not carry the repo", s)
+	}
+}
