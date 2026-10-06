@@ -49,8 +49,9 @@ func missingBases(repo string, prs []model.PR) []string {
 const maxBaseRounds = 5
 
 // BasePRs returns the PR for each base branch of prs in owner/name that is
-// not the default branch and has no PR in prs, whoever wrote it. link needs
-// them: without a base branch's PR a stacked PR looks Stranded. It repeats
+// not the default branch and has no PR in prs, whoever wrote it. Pass them
+// to link.Link as its context PRs: they feed stack walking only (without a
+// base branch's PR a stacked PR looks Stranded) and never join a row. It repeats
 // for the bases of the PRs it found, so a stack whose lower branches belong
 // to someone else resolves down to the default branch (at most
 // maxBaseRounds queries, one branch asked once). Each branch gets the newest

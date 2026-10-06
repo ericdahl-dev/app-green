@@ -122,7 +122,7 @@ func TestBasePRsKeepALaterStackPRFromLookingStranded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chains, _ := link.Link([]model.Ticket{{Key: "ABC-2"}}, append(mine, bases...), []string{"ABC"})
+	chains, _ := link.Link([]model.Ticket{{Key: "ABC-2"}}, mine, bases, []string{"ABC"})
 	p := chains[0].PRs[0]
 	if p.Stranded || p.EffectiveSHA != "aaaa111" {
 		t.Errorf("#2 = %+v, want carried to main by #1's merge aaaa111", p)
