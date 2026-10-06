@@ -1,0 +1,23 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "Acme/App",
+      "defaultBranchRef": {"name": "main"},
+      "b0": {
+        "nodes": [
+          {
+            "number": 1, "title": "Stack base", "url": "https://github.com/Acme/App/pull/1",
+            "headRefName": "s1", "baseRefName": "main", "state": "MERGED", "isDraft": false,
+            "isCrossRepository": false,
+            "createdAt": "2026-09-20T09:00:00Z", "mergedAt": "2026-09-22T09:00:00Z",
+            "author": {"login": "someone-else"},
+            "mergeCommit": {"oid": "aaaa111"},
+            "reviewDecision": "APPROVED",
+            "reviewRequests": {"totalCount": 0}, "reviews": {"totalCount": 1},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]}
+          }
+        ]
+      }
+    }
+  }
+}
