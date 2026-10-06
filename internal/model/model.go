@@ -86,6 +86,7 @@ type PR struct {
 	BaseRef       string
 	URL           string
 	State         PRState
+	IsDraft       bool   // a GitHub draft PR; rules skips its review flags
 	MergeSHA      string // set only when State == PRMerged
 	MergedAt      time.Time
 	OpenedAt      time.Time

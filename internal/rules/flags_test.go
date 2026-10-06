@@ -208,3 +208,29 @@ func TestStrandedPRFlagTargetsItsPRAtRed(t *testing.T) {
 		t.Errorf("flag %+v, want red stranded on PR #3 with reason %q", f, "PR #3 merged into a dead branch")
 	}
 }
+
+func TestDraftPRsSkipReviewFlags(t *testing.T) {
+	th := rules.Thresholds{StaleReview: 48 * time.Hour}
+	old := now.Add(-72 * time.Hour)
+	cases := []struct {
+		name string
+		pr   model.PR
+		want []model.FlagKind
+	}{
+		{"an approved, green draft is not ready to merge", model.PR{IsDraft: true, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1, OpenedAt: old}, nil},
+		{"a draft with no reviewer is not waiting on review", model.PR{IsDraft: true, Checks: model.ChecksPassing, OpenedAt: now}, nil},
+		{"a draft past StaleReview is not stale", model.PR{IsDraft: true, Checks: model.ChecksPassing, Reviewers: 1, Review: model.ReviewRequired, OpenedAt: old}, nil},
+		{"a draft with failing checks is still flagged", model.PR{IsDraft: true, Checks: model.ChecksFailing, OpenedAt: now}, []model.FlagKind{model.FlagCheckFailed}},
+		{"a draft with changes requested is still flagged", model.PR{IsDraft: true, Checks: model.ChecksPassing, Review: model.ReviewChangesRequested, Reviewers: 1, OpenedAt: now},
+			[]model.FlagKind{model.FlagChangesRequested}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.pr.State = model.PROpen
+			got := kinds(rules.Flags(model.Chain{Stage: model.StagePROpen, PRs: []model.PR{tc.pr}}, now, th))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("flags %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

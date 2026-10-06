@@ -66,6 +66,9 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Red, model.FlagCheckFailed, fmt.Sprintf("PR #%d %s failing", p.Number, checkNames(p.Failing)), p, nil)
 		case p.Review == model.ReviewChangesRequested:
 			add(model.Red, model.FlagChangesRequested, fmt.Sprintf("PR #%d changes requested", p.Number), p, nil)
+		case p.IsDraft:
+			// A draft is not asking for review yet: no ready-to-merge, no-reviewer
+			// or stale-review flag. The red flags above still apply.
 		case p.Review == model.ReviewApproved && (p.Checks == model.ChecksPassing || p.Checks == model.ChecksNone):
 			add(model.Yellow, model.FlagReadyToMerge, fmt.Sprintf("PR #%d approved, not merged", p.Number), p, nil)
 		case p.Reviewers == 0 && p.Checks != model.ChecksPending:
