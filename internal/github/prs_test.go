@@ -60,7 +60,7 @@ func TestRecentPRsMapsEveryField(t *testing.T) {
 		State: model.PROpen, IsDraft: true, OpenedAt: ts("2026-10-01T10:00:00Z"),
 		Checks: model.ChecksFailing, Review: model.ReviewRequired, Reviewers: 3,
 		Failing: []model.Check{
-			{Name: "Code scanning results / CodeQL", CodeScanning: true, URL: "https://example.test/scan"},
+			{Name: "CodeQL", CodeScanning: true, URL: "https://example.test/scan"},
 			{Name: "rspec", RunID: 77, URL: "https://example.test/run/77"},
 			{Name: "CodeQL / Analyze (go)", RunID: 78, URL: "https://example.test/run/78"},
 			{Name: "Code scanning results / Semgrep", CodeScanning: true, URL: "https://example.test/semgrep"},

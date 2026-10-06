@@ -23,7 +23,7 @@ fragment pr on PullRequest {
   commits(last:1){nodes{commit{statusCheckRollup{state
     contexts(first:50){nodes{
       __typename
-      ... on CheckRun{name conclusion detailsUrl checkSuite{workflowRun{databaseId}} app{slug}}
+      ... on CheckRun{name conclusion detailsUrl checkSuite{app{slug} workflowRun{databaseId}}}
       ... on StatusContext{context state targetUrl}
     }}}}}}
 }`
@@ -98,13 +98,13 @@ type checkNode struct {
 	Conclusion *string `json:"conclusion"`
 	DetailsURL *string `json:"detailsUrl"`
 	CheckSuite *struct {
+		App *struct {
+			Slug string `json:"slug"`
+		} `json:"app"`
 		WorkflowRun *struct {
 			DatabaseID int64 `json:"databaseId"`
 		} `json:"workflowRun"`
 	} `json:"checkSuite"`
-	App *struct {
-		Slug string `json:"slug"`
-	} `json:"app"`
 	Context   string  `json:"context"`
 	State     string  `json:"state"`
 	TargetURL *string `json:"targetUrl"`
@@ -174,12 +174,18 @@ func (c checkNode) failing() (model.Check, bool) {
 			return model.Check{}, false
 		}
 		chk := model.Check{Name: c.Name, URL: deref(c.DetailsURL)}
-		if c.CheckSuite != nil && c.CheckSuite.WorkflowRun != nil {
-			chk.RunID = c.CheckSuite.WorkflowRun.DatabaseID
+		slug := ""
+		if s := c.CheckSuite; s != nil {
+			if s.WorkflowRun != nil {
+				chk.RunID = s.WorkflowRun.DatabaseID
+			}
+			if s.App != nil {
+				slug = s.App.Slug
+			}
 		}
 		// A code scanning alert is not fixed by a re-run. The CodeQL Actions
 		// job ("CodeQL / Analyze") is an ordinary run and can be re-run.
-		chk.CodeScanning = (c.App != nil && c.App.Slug == "github-code-scanning") || strings.HasPrefix(c.Name, "Code scanning")
+		chk.CodeScanning = slug == "github-code-scanning" || strings.HasPrefix(c.Name, "Code scanning")
 		return chk, true
 	case "StatusContext":
 		if c.State != "FAILURE" && c.State != "ERROR" {
