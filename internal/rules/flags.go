@@ -12,6 +12,7 @@ import (
 type Thresholds struct {
 	StaleReview time.Duration // no review for this long → yellow
 	DoneGrace   time.Duration // Done but not in prod for this long → yellow
+	FadeAfter   time.Duration // a clean row in prod this long drops out
 }
 
 // Flags returns c's flags, worst level first, then in FlagKind order.
