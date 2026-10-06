@@ -3,11 +3,14 @@ package github_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ericdahl-dev/app-green/internal/github"
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
@@ -131,7 +134,7 @@ func page(next bool, cursor string, prs ...map[string]any) map[string]any {
 	}}}
 }
 
-func TestRecentPRsPagesUntilPRsPredateSince(t *testing.T) {
+func TestRecentPRsPagesUntilUpdatesPredateSince(t *testing.T) {
 	var afters []any
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		req := decodeGQL(t, r)
@@ -143,10 +146,12 @@ func TestRecentPRsPagesUntilPRsPredateSince(t *testing.T) {
 		var body map[string]any
 		switch after {
 		case nil:
-			body = page(true, "p1", map[string]any{"number": 10, "createdAt": "2026-09-20T00:00:00Z"})
+			// created long before since but updated recently: keep paging
+			body = page(true, "p1", map[string]any{"number": 10, "createdAt": "2025-01-01T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z"})
 		case "p1":
-			// the last PR here was created before since: stop, though GitHub has more
-			body = page(true, "p2", map[string]any{"number": 9, "createdAt": "2026-09-10T00:00:00Z"}, map[string]any{"number": 8, "createdAt": "2026-08-01T00:00:00Z"})
+			// #9 was created recently; #8 was last updated before since: stop, though GitHub has more
+			body = page(true, "p2", map[string]any{"number": 9, "createdAt": "2026-09-10T00:00:00Z", "updatedAt": "2026-09-12T00:00:00Z"},
+				map[string]any{"number": 8, "createdAt": "2026-07-01T00:00:00Z", "updatedAt": "2026-08-01T00:00:00Z"})
 		default:
 			t.Errorf("fetched page after %v", after)
 			body = page(false, "")
@@ -157,7 +162,7 @@ func TestRecentPRsPagesUntilPRsPredateSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prs) != 3 || prs[2].Number != 8 {
+	if len(prs) != 3 || prs[1].Number != 9 || prs[2].Number != 8 {
 		t.Errorf("prs = %+v, want #10, #9, #8", prs)
 	}
 	if !reflect.DeepEqual(afters, []any{nil, "p1"}) {
@@ -170,7 +175,7 @@ func TestRecentPRsStopsWhenGitHubHasNoMore(t *testing.T) {
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		decodeGQL(t, r)
 		calls++
-		_ = json.NewEncoder(w).Encode(page(false, "p1", map[string]any{"number": 10, "createdAt": "2026-09-20T00:00:00Z"}))
+		_ = json.NewEncoder(w).Encode(page(false, "p1", map[string]any{"number": 10, "createdAt": "2026-09-20T00:00:00Z", "updatedAt": "2026-09-20T00:00:00Z"}))
 	})
 	if _, _, err := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since); err != nil || calls != 1 {
 		t.Errorf("err %v, calls %d, want 1", err, calls)
@@ -200,3 +205,82 @@ func TestRecentPRsGraphQLErrors(t *testing.T) {
 }
 
 func equalPR(a, b model.PR) bool { return reflect.DeepEqual(a, b) }
+
+// failingOf serves one PR by me-dev whose rollup holds contexts, and returns
+// its Failing checks.
+func failingOf(t *testing.T, contexts ...map[string]any) []model.Check {
+	t.Helper()
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		decodeGQL(t, r)
+		rollup := map[string]any{"state": "FAILURE", "contexts": map[string]any{"nodes": contexts}}
+		_ = json.NewEncoder(w).Encode(page(false, "", map[string]any{"number": 1, "createdAt": "2026-09-20T00:00:00Z",
+			"commits": map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": rollup}}}}}))
+	})
+	prs, _, err := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since)
+	if err != nil || len(prs) != 1 {
+		t.Fatalf("prs %+v, err %v", prs, err)
+	}
+	return prs[0].Failing
+}
+
+func checkRun(name, conclusion, slug string, runID int64) map[string]any {
+	suite := map[string]any{"app": map[string]any{"slug": slug}, "workflowRun": nil}
+	if runID != 0 {
+		suite["workflowRun"] = map[string]any{"databaseId": runID}
+	}
+	return map[string]any{"__typename": "CheckRun", "name": name, "conclusion": conclusion, "checkSuite": suite}
+}
+
+func TestAdvancedSecurityCheckIsCodeScanning(t *testing.T) {
+	got := failingOf(t, checkRun("CodeQL", "FAILURE", "github-advanced-security", 0), checkRun("CodeQL-Build (go)", "FAILURE", "github-actions", 42))
+	want := []model.Check{{Name: "CodeQL", CodeScanning: true}, {Name: "CodeQL-Build (go)", RunID: 42}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("failing = %+v, want %+v", got, want)
+	}
+}
+
+func TestStartupFailureFailsAndStaleDoesNot(t *testing.T) {
+	got := failingOf(t, checkRun("build", "STARTUP_FAILURE", "github-actions", 43), checkRun("old", "STALE", "github-actions", 44))
+	want := []model.Check{{Name: "build", RunID: 43}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("failing = %+v, want %+v", got, want)
+	}
+}
+
+func TestGraphQLRateLimitIsA429(t *testing.T) {
+	reset := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	cases := []struct {
+		name     string
+		body     string
+		min, max time.Duration
+	}{
+		{"no data backs off a minute", `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`, time.Minute, time.Minute},
+		{"rateLimit.resetAt sets the backoff", `{"data":{"rateLimit":{"resetAt":"` + reset + `"},"repository":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`,
+			4 * time.Minute, 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var queries []string
+			c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				queries = append(queries, decodeGQL(t, r).Query)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			_, _, errRecent := c.RecentPRs(context.Background(), "acme", "app", "me-dev", since)
+			_, _, errBase := c.BasePRs(context.Background(), "acme", "app", []model.PR{{Repo: "acme/app", DefaultBranch: "main", HeadRef: "h", BaseRef: "s1", State: model.PROpen}})
+			for _, err := range []error{errRecent, errBase} {
+				var ae *github.APIError
+				if !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || github.IsAuth(err) {
+					t.Fatalf("err = %v, want a 429 *APIError", err)
+				}
+				if ae.RetryAfter < tc.min || ae.RetryAfter > tc.max {
+					t.Errorf("RetryAfter = %v, want %v..%v", ae.RetryAfter, tc.min, tc.max)
+				}
+			}
+			for _, q := range queries {
+				if !strings.Contains(q, "rateLimit{resetAt}") {
+					t.Errorf("query does not ask for rateLimit{resetAt}:\n%s", q)
+				}
+			}
+		})
+	}
+}

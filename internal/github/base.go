@@ -18,7 +18,7 @@ func basePRsQuery(n int) string {
 		fmt.Fprintf(&vars, ",$b%d:String!", i)
 		fmt.Fprintf(&aliases, "\n    b%d:pullRequests(headRefName:$b%d,states:[OPEN,MERGED],first:5,orderBy:{field:CREATED_AT,direction:DESC}){nodes{...pr}}", i, i)
 	}
-	return "query($owner:String!,$name:String!" + vars.String() + "){\n  repository(owner:$owner,name:$name){\n    nameWithOwner\n    defaultBranchRef{name}" +
+	return "query($owner:String!,$name:String!" + vars.String() + "){\n  rateLimit{resetAt}\n  repository(owner:$owner,name:$name){\n    nameWithOwner\n    defaultBranchRef{name}" +
 		aliases.String() + "\n  }\n}" + prFields
 }
 

@@ -14,6 +14,7 @@ import (
 type Thresholds struct {
 	// StaleReview: an open PR with no approval this long after it opened is
 	// yellow (a PR with no reviewer at all is flagged whatever this is).
+	// Draft PRs get neither flag, nor ready to merge.
 	StaleReview time.Duration
 	// DoneGrace: a ticket Done in Jira this long (since StatusSince, else
 	// Updated) without being in prod is yellow.

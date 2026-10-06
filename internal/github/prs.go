@@ -13,7 +13,7 @@ import (
 // base-branch queries so the two cannot drift.
 const prFields = `
 fragment pr on PullRequest {
-  number title url headRefName baseRefName state isDraft createdAt mergedAt
+  number title url headRefName baseRefName state isDraft createdAt updatedAt mergedAt
   isCrossRepository
   author{login}
   mergeCommit{oid}
@@ -29,6 +29,7 @@ fragment pr on PullRequest {
 }`
 
 const recentPRsQuery = `query($owner:String!,$name:String!,$after:String){
+  rateLimit{resetAt}
   repository(owner:$owner,name:$name){
     nameWithOwner
     defaultBranchRef{name}
@@ -62,6 +63,7 @@ type prNode struct {
 	State             string     `json:"state"`
 	IsDraft           bool       `json:"isDraft"`
 	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
 	MergedAt          *time.Time `json:"mergedAt"`
 	IsCrossRepository bool       `json:"isCrossRepository"`
 	Author            *struct {
@@ -160,8 +162,8 @@ func (n prNode) toPR(repo repoInfo) model.PR {
 }
 
 // failing returns the check as a model.Check when it has failed: a CheckRun
-// that concluded FAILURE, TIMED_OUT, CANCELLED or ACTION_REQUIRED, or a
-// StatusContext in FAILURE or ERROR.
+// that concluded FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED or
+// STARTUP_FAILURE (not STALE), or a StatusContext in FAILURE or ERROR.
 func (c checkNode) failing() (model.Check, bool) {
 	switch c.Typename {
 	case "CheckRun":
@@ -169,7 +171,7 @@ func (c checkNode) failing() (model.Check, bool) {
 			return model.Check{}, false
 		}
 		switch *c.Conclusion {
-		case "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED":
+		case "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE":
 		default:
 			return model.Check{}, false
 		}
@@ -183,9 +185,11 @@ func (c checkNode) failing() (model.Check, bool) {
 				slug = s.App.Slug
 			}
 		}
-		// A code scanning alert is not fixed by a re-run. The CodeQL Actions
-		// job ("CodeQL / Analyze") is an ordinary run and can be re-run.
-		chk.CodeScanning = slug == "github-code-scanning" || strings.HasPrefix(c.Name, "Code scanning")
+		// A code scanning alert is not fixed by a re-run. Its check comes
+		// from the github-code-scanning or github-advanced-security app. The
+		// CodeQL Actions jobs ("CodeQL / Analyze", "CodeQL-Build") come from
+		// github-actions: ordinary runs that can be re-run.
+		chk.CodeScanning = slug == "github-code-scanning" || slug == "github-advanced-security" || strings.HasPrefix(c.Name, "Code scanning")
 		return chk, true
 	case "StatusContext":
 		if c.State != "FAILURE" && c.State != "ERROR" {
@@ -223,7 +227,9 @@ const maxPages = 20
 // RecentPRs returns author's open and merged PRs in owner/name, most
 // recently updated first, with logins compared ignoring case (an empty author
 // matches nothing). It pages while GitHub has more and the last PR on the
-// page was created after since; since only stops paging and filters nothing.
+// page was updated after since: the list is ordered by update time, so every
+// later PR was updated (and created) before since. since only stops paging
+// and filters nothing.
 // Warnings are GraphQL errors that came with usable data.
 func (c *Client) RecentPRs(ctx context.Context, owner, name, author string, since time.Time) ([]model.PR, []string, error) {
 	var out []model.PR
@@ -245,7 +251,7 @@ func (c *Client) RecentPRs(ctx context.Context, owner, name, author string, sinc
 				out = append(out, n.toPR(page.Repository.repoInfo))
 			}
 		}
-		if !prs.PageInfo.HasNextPage || len(prs.Nodes) == 0 || !prs.Nodes[len(prs.Nodes)-1].CreatedAt.After(since) {
+		if !prs.PageInfo.HasNextPage || len(prs.Nodes) == 0 || !prs.Nodes[len(prs.Nodes)-1].UpdatedAt.After(since) {
 			break
 		}
 		after = prs.PageInfo.EndCursor
