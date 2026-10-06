@@ -30,11 +30,19 @@ func noCompare(t *testing.T) model.CompareFunc {
 }
 
 func TestSlotExactMatch(t *testing.T) {
+	// aaaa deployed at t-2h; the newer bbbb deploy still contains it, so it is
+	// running now, and At stays at the aaaa deploy.
 	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
-		dep(model.DeploySucceeded, "bbbb", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-time.Hour)),
+		dep(model.DeploySucceeded, "bbbb", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
 	}}
-	s := link.Slot([]model.PR{merged("aaaa")}, h, noCompare(t))
-	if s.State != model.SlotDeployed || !s.At.Equal(t0.Add(-time.Hour)) {
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "bbbb" {
+			return model.Included
+		}
+		return model.NotIncluded
+	}
+	s := link.Slot([]model.PR{merged("aaaa")}, h, cmp)
+	if s.State != model.SlotDeployed || !s.At.Equal(t0.Add(-2*time.Hour)) {
 		t.Errorf("slot = %+v, want deployed at the aaaa deploy", s)
 	}
 }
@@ -135,5 +143,59 @@ func TestSlotCompareSkipsDeployWithoutRepo(t *testing.T) {
 	}
 	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotDeployed || s.SHA != "cccc" {
 		t.Errorf("slot = %+v, want deployed via cccc", s)
+	}
+}
+
+func TestSlotRollbackIsNotDeployed(t *testing.T) {
+	// aaaa deployed, then a rollback deployed zzzz, which does not contain it.
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "zzzz", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-2*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "zzzz" {
+			return model.NotIncluded
+		}
+		t.Fatalf("unexpected compare %s...%s", base, head)
+		return model.InclusionUnknown
+	}
+	if s := link.Slot([]model.PR{merged("aaaa")}, h, cmp); s.State != model.SlotNotYet {
+		t.Errorf("slot = %+v, want not yet after rollback", s)
+	}
+}
+
+func TestSlotSameSHARedeployKeepsFirstTime(t *testing.T) {
+	// An infra-only redeploy of aaaa must not reset when aaaa first went out.
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "aaaa", t0), dep(model.DeploySucceeded, "aaaa", t0.Add(-time.Hour)),
+	}}
+	s := link.Slot([]model.PR{merged("aaaa")}, h, noCompare(t))
+	if s.State != model.SlotDeployed || !s.At.Equal(t0.Add(-time.Hour)) {
+		t.Errorf("slot = %+v, want deployed at the first aaaa deploy", s)
+	}
+}
+
+func TestSlotNewestSuccessIsExactNoCompare(t *testing.T) {
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{
+		dep(model.DeploySucceeded, "aaaa", t0), dep(model.DeploySucceeded, "bbbb", t0.Add(-time.Hour)),
+	}}
+	s := link.Slot([]model.PR{merged("aaaa")}, h, noCompare(t))
+	if s.State != model.SlotDeployed || !s.At.Equal(t0) || s.SHA != "aaaa" {
+		t.Errorf("slot = %+v, want deployed at the newest deploy", s)
+	}
+}
+
+func TestSlotStackPendingHoldsBack(t *testing.T) {
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{dep(model.DeploySucceeded, "aaaa", t0)}}
+	stacked := model.PR{Repo: "acme/app", State: model.PRMerged, MergeSHA: "ssss", StackPending: true}
+	if s := link.Slot([]model.PR{merged("aaaa"), stacked}, h, noCompare(t)); s.State != model.SlotNotYet {
+		t.Errorf("slot = %+v, want not yet while a merged PR waits in a stack", s)
+	}
+}
+
+func TestSlotStackPendingOtherRepoIgnored(t *testing.T) {
+	h := model.EnvHistory{Env: test, Deploys: []model.Deploy{dep(model.DeploySucceeded, "aaaa", t0)}}
+	stacked := model.PR{Repo: "acme/docs", State: model.PRMerged, MergeSHA: "ssss", StackPending: true}
+	if s := link.Slot([]model.PR{merged("aaaa"), stacked}, h, noCompare(t)); s.State != model.SlotDeployed {
+		t.Errorf("slot = %+v, want deployed; acme/docs is not in this pipeline", s)
 	}
 }
