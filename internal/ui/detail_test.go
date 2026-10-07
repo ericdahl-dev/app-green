@@ -304,3 +304,65 @@ func TestDetailTicketGone(t *testing.T) {
 		t.Errorf("the next key clears the note: %q", ls[len(ls)-1])
 	}
 }
+
+func TestDetailScroll(t *testing.T) {
+	// 8 rows: the header, 6 body lines and the footer, for 10 body lines.
+	m := update(t, inDetail(t), tea.WindowSizeMsg{Width: 100, Height: 8})
+	body := func(m ui.App) string {
+		ls := trimmed(m)
+		if len(ls) != 8 {
+			t.Fatalf("the view is %d lines, want 8:\n%s", len(ls), m.View())
+		}
+		if ls[0] != ui.RenderHeader(fxDetailSnapshot().Status, now, 100) || ls[7] != detailKeys {
+			t.Errorf("the header and footer stay put:\n%s", m.View())
+		}
+		return strings.Join(ls[1:7], "\n")
+	}
+	first := func(m ui.App) string { return trimmed(m)[1] }
+
+	if !strings.HasPrefix(first(m), "ABC-19") {
+		t.Errorf("opens at the top:\n%s", m.View())
+	}
+	m = press(t, m, "j", "j", "j", "j", "j") // to prod-acct Production, the last item
+	if got := cursorLine(t, m); !strings.Contains(got, "prod-acct   Production") {
+		t.Fatalf("selection: %q", got)
+	}
+	if !strings.HasPrefix(first(m), "> PR #330") && !strings.HasPrefix(first(m), "  PR #330") {
+		t.Errorf("scrolled just enough to show the selection:\n%s", body(m))
+	}
+	m = press(t, m, "j", "j", "j", "j", "j") // past the last item: the flags scroll in
+	if b := body(m); !strings.HasSuffix(b, "◐ stage-acct Production awaiting approval") {
+		t.Errorf("the last flag can be reached:\n%s", b)
+	}
+	cursorLine(t, m) // the selection is still on screen
+	m = press(t, m, "k", "k", "k", "k", "k")
+	if got := cursorLine(t, m); !strings.Contains(got, "PR #330") || !strings.HasPrefix(first(m), "ABC-19") {
+		t.Errorf("back at the first item the ticket line shows:\n%s", body(m))
+	}
+}
+
+func TestDetailCleansText(t *testing.T) {
+	const evil = "\x1b]52;c;aGk=\x07x\ny\x9b"
+	snap := fxDetailSnapshot()
+	c := &snap.Chains[1]
+	c.Ticket.Title, c.Ticket.Status = "Title"+evil, "Review"+evil
+	c.Stale, c.StaleReason = true, "acme/app"+evil
+	c.PRs[0].Repo = "acme/app" + evil
+	c.PRs[1].Failing[0].Name = "rspec" + evil
+	c.Slots[0].Env.Account, c.Slots[0].Env.Stage, c.Slots[0].SHA = "stage-acct"+evil, "Test"+evil, "\x1b[31maaaa1111"
+	c.Flags[0].Reason = "failed" + evil
+	m := press(t, update(t, newApp(t), snap), "j", "enter")
+	v := m.View()
+	if strings.ContainsAny(v, "\x1b\x07") || strings.Contains(v, "\x9b") {
+		t.Errorf("escape sequences and controls are stripped: %q", v)
+	}
+	if n := len(viewLines(m)); n != 13 {
+		t.Errorf("newlines in the data do not add lines: %d lines\n%s", n, v)
+	}
+	for _, want := range []string{"Titlex y", "Jira: Reviewx y", "~ stale: acme/appx y", "acme/appx y", "rspecx y",
+		"stage-acctx y  Testx y", "✓ deployed 1d ago (aaaa111)", "● failedx y"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("missing %q in\n%s", want, v)
+		}
+	}
+}

@@ -25,9 +25,10 @@ type App struct {
 	offset        int                // the first body line shown
 	width, height int
 
-	detail string // the ticket key whose detail screen is open, "" for the list
-	dsel   int    // the selected item of the detail screen
-	note   string // why the detail screen closed, until the next key
+	detail  string // the ticket key whose detail screen is open, "" for the list
+	dsel    int    // the selected item of the detail screen
+	doffset int    // the first detail line shown
+	note    string // why the detail screen closed, until the next key
 }
 
 // NewApp builds the App. snaps is the resolver's out channel, refresh its
@@ -115,7 +116,7 @@ func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
 		}
 	case key.Matches(msg, keys.enter):
 		if m.snap != nil && m.cursor < len(m.snap.Chains) {
-			m.detail, m.dsel = m.snap.Chains[m.cursor].Ticket.Key, 0
+			m.detail, m.dsel, m.doffset = m.snap.Chains[m.cursor].Ticket.Key, 0, 0
 		}
 	case key.Matches(msg, keys.open):
 		if u := m.target(); u != "" {

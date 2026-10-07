@@ -141,8 +141,12 @@ func (m App) bodyHeight() int {
 	return max(m.height-2, 1)
 }
 
-// scroll moves the window of body lines just enough to show the cursor.
+// scroll moves the window of body lines just enough to show the cursor. On
+// the detail screen it keeps the detail's window within its lines.
 func (m App) scroll() App {
+	if m.detail != "" {
+		return m.detailScroll()
+	}
 	budget := m.bodyHeight()
 	if budget < 0 || m.snap == nil {
 		m.offset = 0

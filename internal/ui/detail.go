@@ -36,10 +36,23 @@ func (m App) detailKey(msg tea.KeyMsg) (App, tea.Cmd) {
 	case key.Matches(msg, keys.back):
 		m.detail = ""
 	case key.Matches(msg, keys.up):
-		m.dsel = max(m.dsel-1, 0)
+		// Above the first item (or with none) the window scrolls instead.
+		if m.dsel == 0 {
+			m.doffset--
+		} else {
+			m.dsel--
+			m = m.showSelection()
+		}
 	case key.Matches(msg, keys.down):
+		// Past the last item (or with none) the window scrolls instead, so
+		// the flags below can be read on a short screen.
 		c, _ := m.chain(m.detail)
-		m.dsel = min(m.dsel+1, max(len(detailItems(c))-1, 0))
+		if m.dsel >= len(detailItems(c))-1 {
+			m.doffset++
+		} else {
+			m.dsel++
+			m = m.showSelection()
+		}
 	case key.Matches(msg, keys.open):
 		c, _ := m.chain(m.detail)
 		if u := detailTarget(c, m.dsel); u != "" {
@@ -69,12 +82,12 @@ func (m App) refreshDetail(before model.Chain) App {
 		for i, it := range items {
 			if it.id() == id {
 				m.dsel = i
-				return m
+				return m.showSelection()
 			}
 		}
 	}
 	m.dsel = max(min(m.dsel, len(items)-1), 0)
-	return m
+	return m.showSelection()
 }
 
 // id names the item so the selection can find it in the next snapshot:
@@ -130,7 +143,21 @@ func detailTarget(c model.Chain, i int) string {
 }
 
 // detailView is the header, the detail of the open ticket, and the footer.
+// When the detail is taller than the screen it scrolls; the header and
+// footer stay put.
 func (m App) detailView(width int) string {
+	body, _ := m.detailBody(width)
+	if budget := m.bodyHeight(); budget >= 0 && len(body) > budget {
+		body = body[m.doffset:min(m.doffset+budget, len(body))]
+	}
+	lines := append([]string{m.styles.Header(m.snap.Status, m.now(), width)}, body...)
+	return strings.Join(append(lines, m.footer(detailKeys, width)), "\n")
+}
+
+// detailBody is the detail screen's lines, each width cells, and the index
+// of the selected item's line (-1 with nothing to select): the ticket line,
+// the stale line, one line per PR and per applying env, then the flags.
+func (m App) detailBody(width int) ([]string, int) {
 	c, _ := m.chain(m.detail)
 	now := m.now()
 	body := []string{ticketLine(c, width)}
@@ -145,6 +172,7 @@ func (m App) detailView(width int) string {
 			stageW = max(stageW, ansi.StringWidth(clean(it.slot.Env.Stage)))
 		}
 	}
+	sel := -1
 	for i, it := range items {
 		var line string
 		if it.slot != nil {
@@ -152,16 +180,48 @@ func (m App) detailView(width int) string {
 		} else {
 			line = "  " + prLine(*it.pr, now)
 		}
-		body = append(body, m.detailMark(i, fit(line, width)))
+		line = fit(line, width)
+		if i == m.dsel {
+			sel, line = len(body), m.styles.selected(line)
+		}
+		body = append(body, line)
 	}
 	if len(c.Flags) > 0 {
-		body = append(body, "Flags")
+		body = append(body, fit("Flags", width))
 		for _, f := range c.Flags {
 			body = append(body, fit("  "+m.styles.marker(f.Level)+" "+clean(f.Reason), width))
 		}
 	}
-	lines := append([]string{m.styles.Header(m.snap.Status, m.now(), width)}, body...)
-	return strings.Join(append(lines, m.footer(detailKeys, width)), "\n")
+	return body, sel
+}
+
+// showSelection scrolls the detail just enough to show the selected line,
+// and to the top on the first item so the ticket line shows.
+func (m App) showSelection() App {
+	budget := m.bodyHeight()
+	_, sel := m.detailBody(defaultWidth)
+	switch {
+	case budget < 0 || sel < 0:
+	case m.dsel == 0:
+		m.doffset = max(sel-budget+1, 0)
+	case sel < m.doffset:
+		m.doffset = sel
+	case sel >= m.doffset+budget:
+		m.doffset = sel - budget + 1
+	}
+	return m
+}
+
+// detailScroll keeps the detail's window within its lines.
+func (m App) detailScroll() App {
+	budget := m.bodyHeight()
+	if budget < 0 {
+		m.doffset = 0
+		return m
+	}
+	body, _ := m.detailBody(defaultWidth)
+	m.doffset = min(max(m.doffset, 0), max(len(body)-budget, 0))
+	return m
 }
 
 // ticketLine is the key and title, with "Jira: <status>" at the right edge.
@@ -177,14 +237,6 @@ func ticketLine(c model.Chain, width int) string {
 		return fit(right, width)
 	}
 	return fit(fit(left, avail)+"  "+right, width)
-}
-
-// detailMark is line, selected when it is the detail screen's item i.
-func (m App) detailMark(i int, line string) string {
-	if i == m.dsel {
-		return m.styles.selected(line)
-	}
-	return line
 }
 
 // prLine is "PR #330  acme/app  merged 2d ago  ✓ checks  ✓ approved": the
