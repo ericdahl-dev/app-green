@@ -43,7 +43,7 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 		}
 		switch {
 		case s.State == model.SlotFailed && s.Deploy != nil && s.Deploy.Status == model.DeployRejected:
-			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s approval rejected", s.Env.Account, s.Env.Stage), nil, s)
+			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s approval rejected or expired", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotFailed:
 			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s failed", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotRolledBack:

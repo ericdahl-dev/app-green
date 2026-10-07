@@ -9,10 +9,12 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/codepipeline"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/smithy-go"
 )
 
 // pipelineAPI is the part of the CodePipeline client the adapter uses, so
@@ -77,4 +79,32 @@ func IsSSOExpired(err error) bool {
 		}
 	}
 	return false
+}
+
+// extraThrottleCodes are throttling codes beyond the SDK's retry defaults.
+var extraThrottleCodes = map[string]bool{
+	"ThrottlingException":      true,
+	"TooManyRequestsException": true,
+	"RequestLimitExceeded":     true,
+}
+
+// IsThrottled reports whether err is AWS rate limiting, so the caller can
+// back off instead of reporting a failure.
+func IsThrottled(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := apiErr.ErrorCode()
+	if _, ok := retry.DefaultThrottleErrorCodes[code]; ok {
+		return true
+	}
+	return extraThrottleCodes[code]
+}
+
+// IsAccessDenied reports whether err means the profile lacks permission for
+// the call (AccessDenied, AccessDeniedException).
+func IsAccessDenied(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && strings.HasPrefix(apiErr.ErrorCode(), "AccessDenied")
 }

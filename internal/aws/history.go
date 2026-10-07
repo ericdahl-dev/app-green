@@ -63,9 +63,12 @@ func (c *Client) History(ctx context.Context, pipeline string, sources map[strin
 		deploys, pending := stageDeploys(spec, acts, execs)
 		for _, p := range pending {
 			if state == nil {
+				// Only the token comes from here: on failure keep the history
+				// and show the approval without one.
 				state, err = c.cp.GetPipelineState(ctx, &codepipeline.GetPipelineStateInput{Name: awssdk.String(pipeline)})
 				if err != nil {
-					return nil, warns, fmt.Errorf("aws: GetPipelineState %s: %w", pipeline, err)
+					warns = append(warns, fmt.Sprintf("aws: GetPipelineState %s: %v", pipeline, err))
+					state = &codepipeline.GetPipelineStateOutput{}
 				}
 			}
 			d := model.Deploy{

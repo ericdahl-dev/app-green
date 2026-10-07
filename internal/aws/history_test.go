@@ -2,7 +2,9 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -440,5 +442,26 @@ func TestHistoryRetriedApprovalWaitsAgain(t *testing.T) {
 		[]model.DeployStatus{model.DeployAwaitingApproval, model.DeploySucceeded, model.DeployFailed})
 	if prod[0].ApprovalToken != "tok-3" {
 		t.Errorf("token = %q", prod[0].ApprovalToken)
+	}
+}
+
+func TestHistoryStateFailureIsAWarning(t *testing.T) {
+	f := approvalFake()
+	f.stateErr = errors.New("throttled")
+	got, warns, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec, prodSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod := got["Production"]
+	assertStatuses(t, prod, []string{"exec3", "exec2", "exec1"},
+		[]model.DeployStatus{model.DeployAwaitingApproval, model.DeploySucceeded, model.DeployFailed})
+	if prod[0].ApprovalToken != "" {
+		t.Errorf("token = %q, want none", prod[0].ApprovalToken)
+	}
+	if len(got["Test"]) != 3 {
+		t.Errorf("Test history = %+v, want kept", got["Test"])
+	}
+	if len(warns) == 0 || !strings.Contains(strings.Join(warns, "\n"), "throttled") {
+		t.Errorf("warnings = %v, want the GetPipelineState failure", warns)
 	}
 }

@@ -261,7 +261,7 @@ func TestRejectedApprovalInOneAccountIsRed(t *testing.T) {
 	hs[3].Deploys = []model.Deploy{deploy(model.DeployRejected, "a", now.Add(-30*time.Minute)), ok("z", now.Add(-45*time.Hour))}
 	c, _ := run(t, done, []model.PR{squash}, hs)
 	want(t, c, model.StageAwaitingProd, model.Red, model.FlagPipelineFailed)
-	if f := c.Flags[0]; f.Reason != "prod-acct Production approval rejected" || f.Slot == nil || f.Slot.Env.ID() != prodProd.ID() {
+	if f := c.Flags[0]; f.Reason != "prod-acct Production approval rejected or expired" || f.Slot == nil || f.Slot.Env.ID() != prodProd.ID() {
 		t.Errorf("flag %+v, want it on prod-acct Production saying the approval was rejected", f)
 	}
 }

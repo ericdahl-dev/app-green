@@ -64,8 +64,7 @@ func approvalError(err error) error {
 	if errors.As(err, &invalid) || errors.As(err, &completed) {
 		return fmt.Errorf("%w: %w", ErrApprovalAlreadyDecided, err)
 	}
-	var apiErr interface{ ErrorCode() string }
-	if errors.As(err, &apiErr) && strings.HasPrefix(apiErr.ErrorCode(), "AccessDenied") {
+	if IsAccessDenied(err) {
 		return fmt.Errorf("%w: %w", ErrApprovalNotPermitted, err)
 	}
 	return fmt.Errorf("aws: PutApprovalResult: %w", err)

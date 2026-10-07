@@ -54,3 +54,55 @@ func TestSSOExpiredThroughAdapterErrors(t *testing.T) {
 		t.Errorf("Approve err = %v, want SSO expired", err)
 	}
 }
+
+func TestIsThrottledAndIsAccessDenied(t *testing.T) {
+	op := func(code string) error {
+		return &smithy.OperationError{ServiceID: "CodePipeline", Err: &smithy.GenericAPIError{Code: code, Message: "m"}}
+	}
+	cases := []struct {
+		err               error
+		throttled, denied bool
+	}{
+		{op("ThrottlingException"), true, false},
+		{op("TooManyRequestsException"), true, false},
+		{op("RequestLimitExceeded"), true, false},
+		{op("Throttling"), true, false},
+		{op("AccessDeniedException"), false, true},
+		{op("AccessDenied"), false, true},
+		{op("PipelineNotFoundException"), false, false},
+		{errors.New("ThrottlingException"), false, false},
+		{nil, false, false},
+	}
+	for _, tc := range cases {
+		if got := IsThrottled(tc.err); got != tc.throttled {
+			t.Errorf("IsThrottled(%v) = %v", tc.err, got)
+		}
+		if got := IsAccessDenied(tc.err); got != tc.denied {
+			t.Errorf("IsAccessDenied(%v) = %v", tc.err, got)
+		}
+	}
+}
+
+func TestThrottledAndDeniedThroughAdapterErrors(t *testing.T) {
+	for _, code := range []string{"ThrottlingException", "AccessDeniedException"} {
+		e := &smithy.OperationError{ServiceID: "CodePipeline", Err: &smithy.GenericAPIError{Code: code}}
+		check := IsThrottled
+		if code == "AccessDeniedException" {
+			check = IsAccessDenied
+		}
+		c := &Client{cp: &fakePipeline{err: e}, ecs: &fakeECS{err: e}}
+		ctx := context.Background()
+		if _, err := c.Sources(ctx, "app-pipeline"); !check(err) {
+			t.Errorf("%s: Sources err = %v", code, err)
+		}
+		if _, _, err := c.History(ctx, "app-pipeline", testSources, testSpec); !check(err) {
+			t.Errorf("%s: History err = %v", code, err)
+		}
+		if _, _, err := c.Health(ctx, []Service{{Cluster: "c1", Name: "s1"}}); !check(err) {
+			t.Errorf("%s: Health err = %v", code, err)
+		}
+		if err := c.Approve(ctx, "app-pipeline", "Test", "a", "tok", true, ""); !check(err) {
+			t.Errorf("%s: Approve err = %v", code, err)
+		}
+	}
+}

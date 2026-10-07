@@ -17,6 +17,7 @@ type fakePipeline struct {
 	actionPages []*codepipeline.ListActionExecutionsOutput
 	state       *codepipeline.GetPipelineStateOutput
 	err         error
+	stateErr    error // GetPipelineState only
 
 	actionInputs []*codepipeline.ListActionExecutionsInput
 	execInputs   []*codepipeline.ListPipelineExecutionsInput
@@ -63,6 +64,9 @@ func (f *fakePipeline) GetPipelineState(_ context.Context, _ *codepipeline.GetPi
 	f.stateCalls++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.stateErr != nil {
+		return nil, f.stateErr
 	}
 	if f.state == nil {
 		return &codepipeline.GetPipelineStateOutput{}, nil

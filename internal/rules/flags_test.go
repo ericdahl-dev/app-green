@@ -261,7 +261,7 @@ func TestRejectedApprovalFlagIsRedPipelineFailed(t *testing.T) {
 		deploy *model.Deploy
 		reason string
 	}{
-		{rejected, "a Production approval rejected"},
+		{rejected, "a Production approval rejected or expired"},
 		{failed, "a Production failed"},
 		{nil, "a Production failed"},
 	}
