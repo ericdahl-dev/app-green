@@ -440,7 +440,8 @@ func (r *Resolver) record(name string, err error, now time.Time) {
 		return
 	}
 	r.log.Warn("source failed", "source", name, "err", err)
-	*s = AdapterStatus{Name: name, At: s.At, Err: short(err.Error()), SSO: aws.IsSSOExpired(err)}
+	*s = AdapterStatus{Name: name, At: s.At, Err: short(err.Error()),
+		SSO: strings.HasPrefix(name, "aws ") && aws.IsSSOExpired(err)}
 	if d := retryAfter(err); d > 0 {
 		s.Throttled, s.RetryAt = true, now.Add(d)
 	}

@@ -589,3 +589,40 @@ func TestCanceledPollRecordsNoFailures(t *testing.T) {
 		t.Errorf("log = %q, want no source failure", buf.String())
 	}
 }
+
+// ecsTestEnv is testEnv running ECS service s1.
+const ecsTestEnv = testEnv + `  ecs = [{ cluster = "c1", services = ["s1"] }]
+`
+
+func TestHealthPerEnvKeepsLastGoodOnError(t *testing.T) {
+	h := newHarness(t, nil, ecsTestEnv)
+	h.withShippedChain()
+	sick := model.Health{Known: true, Desired: 2, Healthy: 1}
+	h.stage.set(func(f *fakeDeployer) { f.health = map[string]model.Health{"s1": sick} })
+
+	snap := h.r.Poll(context.Background())
+	if got := snap.Chains[0].Slots[0].Health; got != sick {
+		t.Fatalf("slot health = %+v, want %+v", got, sick)
+	}
+
+	h.stage.set(func(f *fakeDeployer) { f.healthErr = errors.New("aws: DescribeServices c1: boom") })
+	snap = h.r.Poll(context.Background())
+	if got := snap.Chains[0].Slots[0].Health; got != sick {
+		t.Errorf("slot health after error = %+v, want last good %+v", got, sick)
+	}
+	if s := statusOf(t, snap, "aws stage-acct"); s.OK || !strings.Contains(s.Err, "boom") {
+		t.Errorf("stage-acct status = %+v, want the health error", s)
+	}
+}
+
+func TestSSOFlagOnlyForAWS(t *testing.T) {
+	h := newHarness(t, nil)
+	h.withShippedChain()
+	h.tracker.set(func(f *fakeTracker) { f.myErr = errors.New("jira: HTTP 401: token has expired") })
+
+	snap := h.r.Poll(context.Background())
+
+	if j := statusOf(t, snap, "jira"); j.SSO {
+		t.Errorf("jira status = %+v, want SSO false (SSO is an AWS state)", j)
+	}
+}
