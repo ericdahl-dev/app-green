@@ -350,8 +350,16 @@ func TestExtraTicketsFailureKeepsLastGood(t *testing.T) {
 	if len(snap.Chains) != 2 {
 		t.Errorf("chains = %d, want 2 (ABC-9 kept)", len(snap.Chains))
 	}
-	if j := statusOf(t, snap, "jira"); j.OK || !strings.Contains(j.Err, "500") {
-		t.Errorf("jira status = %+v, want the TicketsByKey error", j)
+	// My tickets loaded, so Jira is OK; the lookup's failure is a warning.
+	if j := statusOf(t, snap, "jira"); !j.OK {
+		t.Errorf("jira status = %+v, want OK", j)
+	}
+	if !slices.ContainsFunc(snap.Warnings, func(w string) bool { return strings.Contains(w, "500") }) {
+		t.Errorf("warnings = %q, want the TicketsByKey error", snap.Warnings)
+	}
+	h.tracker.set(func(f *fakeTracker) { f.byKeyErr = nil })
+	if snap = h.r.Poll(context.Background()); slices.ContainsFunc(snap.Warnings, func(w string) bool { return strings.Contains(w, "500") }) {
+		t.Errorf("warnings after recovery = %q, want the error gone", snap.Warnings)
 	}
 }
 

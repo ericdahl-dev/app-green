@@ -349,7 +349,7 @@ func TestSearchPageCapIsError(t *testing.T) {
 	}
 }
 
-func TestCancelledContext(t *testing.T) {
+func TestCanceledContext(t *testing.T) {
 	calls := 0
 	c := countingServer(t, &calls)
 	ctx, cancel := context.WithCancel(context.Background())

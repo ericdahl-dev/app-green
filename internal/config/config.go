@@ -630,8 +630,9 @@ func quoteStderr(s string) string {
 // resolveToken reads the variable env, or runs command with sh -c and
 // trims its output.
 //
-// A command runs at most tokenCommandTimeout (10s) plus a 1s WaitDelay, so
-// with both tokens on commands startup can stall about 22s in the worst case.
+// A command runs at most tokenCommandTimeout (10s) plus a 1s WaitDelay.
+// resolver.FromConfig resolves both tokens concurrently, so with both on
+// commands startup can stall about 11s in the worst case.
 // Errors never include stdout, where the token is, but a failed command's
 // stderr is quoted (trimmed, at most maxStderr bytes) to explain the
 // failure: a command that echoes the token to stderr and then fails would

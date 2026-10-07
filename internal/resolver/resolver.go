@@ -68,7 +68,11 @@ type AdapterStatus struct {
 	RetryAt   time.Time
 }
 
-// Snapshot is one poll's result, for the UI.
+// Snapshot is one poll's result, for the UI, which must treat it as
+// read-only: its slices and pointers (EnvSlot.Deploy, PR.Failing) may share
+// backing data with other Snapshots and with the Resolver's cached results.
+// The Resolver replaces that data on each poll and never mutates it, so
+// reading a Snapshot from another goroutine is safe.
 type Snapshot struct {
 	Chains   []model.Chain // evaluated and sorted
 	Unlinked []model.PR
@@ -141,8 +145,10 @@ type Resolver struct {
 	ticketWarn []string
 	extra      []model.Ticket // named by my open PRs, not in tickets
 	extraWarn  []string
+	extraErr   string // the last extras lookup's failure, as a warning
 	repos      map[string]repoData
-	sources    map[config.PipelineKey]map[string]string // session cache
+	sources    map[config.PipelineKey]map[string]string // cached until a refresh
+	recheck    map[config.PipelineKey]bool              // cached sources a refresh wants asked again
 	pipelines  map[config.PipelineKey]pipelineData
 	health     map[string]healthData // by Env.ID()
 }
@@ -164,6 +170,7 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 		status:    map[string]*AdapterStatus{},
 		repos:     map[string]repoData{},
 		sources:   map[config.PipelineKey]map[string]string{},
+		recheck:   map[config.PipelineKey]bool{},
 		pipelines: map[config.PipelineKey]pipelineData{},
 		health:    map[string]healthData{},
 	}
@@ -181,7 +188,8 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 // refresh, sending each Snapshot to out, until ctx is canceled. Polls run
 // one at a time: a refresh that arrives during a poll starts the next one
 // as soon as it ends, and the interval restarts after every poll. A refresh
-// also retries, once, a source stopped by a rejected token. Send on
+// also retries, once, a source stopped by a rejected token and asks every
+// pipeline for its sources again. Send on
 // refresh without blocking (a buffer of 1 coalesces repeated presses). A
 // successful action (Approve, Rerun, Transition) also starts a poll, but
 // not the token retry: it is a re-read after a change, not the user asking.
@@ -202,7 +210,7 @@ func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan 
 		select {
 		case <-timer.C:
 		case <-refresh:
-			r.clearAuth()
+			r.onRefresh()
 		case <-r.kick:
 		case <-ctx.Done():
 			return
@@ -255,7 +263,11 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 		gr    githubResult
 		ars   = make([]accountResult, len(accts))
 		known = maps.Clone(r.sources) // read by the AWS goroutines
+		ask   = maps.Clone(known)     // sources the AWS goroutines need not ask for
 	)
+	for k := range r.recheck {
+		delete(ask, k)
+	}
 	run := func(name string, fetch func()) bool {
 		if r.backingOff(name, now) {
 			return false
@@ -269,7 +281,7 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 	githubRan := run("github", func() { gr = r.fetchGitHub(ctx, watched, now) })
 	acctRan := make([]bool, len(accts))
 	for i, a := range accts {
-		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, known) })
+		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, ask) })
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
@@ -291,12 +303,10 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 			r.tickets, r.ticketWarn = jr.tickets, jr.warn
 		}
 		// Extra tickets need GitHub's PRs, so they come after the fetches.
-		// A rate-limited Jira, or one that rejected the token, is not asked
-		// again this poll.
-		if r.retryAfter(err) == 0 && !isAuth(err) {
-			if xerr := r.fetchExtraTickets(ctx); err == nil {
-				err = xerr
-			}
+		// A Jira that just failed is not asked again this poll; the
+		// previous extras stay.
+		if err == nil {
+			err = r.fetchExtraTickets(ctx)
 		}
 		r.record("jira", err, now)
 	}
@@ -307,6 +317,7 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 		ar := ars[i]
 		for k, v := range ar.sources {
 			r.sources[k] = v
+			delete(r.recheck, k)
 		}
 		for k, v := range ar.pipelines {
 			v.at = now
@@ -332,7 +343,9 @@ func (r *Resolver) fetchJira(ctx context.Context) jiraResult {
 
 // fetchExtraTickets looks up the tickets my open PRs name that MyTickets
 // did not return (assigned to someone else, say), so those PRs still get a
-// row. On error the previous extras stay.
+// row. On error the previous extras stay. A failed lookup is a warning, not
+// a Jira failure (my tickets loaded), except a rejected token or a rate
+// limit, which it returns so Jira stops or backs off.
 func (r *Resolver) fetchExtraTickets(ctx context.Context) error {
 	have := map[string]bool{}
 	for _, t := range r.tickets {
@@ -352,15 +365,19 @@ func (r *Resolver) fetchExtraTickets(ctx context.Context) error {
 		}
 	}
 	if len(keys) == 0 {
-		r.extra, r.extraWarn = nil, nil
+		r.extra, r.extraWarn, r.extraErr = nil, nil, ""
 		return nil
 	}
 	slices.Sort(keys)
 	t, w, err := r.ad.Tracker.TicketsByKey(ctx, keys)
 	if err != nil {
-		return err
+		if isAuth(err) || r.retryAfter(err) > 0 {
+			return err
+		}
+		r.extraErr = short(fmt.Sprintf("jira: looking up %s: %v", strings.Join(keys, ", "), err))
+		return nil
 	}
-	r.extra, r.extraWarn = t, w
+	r.extra, r.extraWarn, r.extraErr = t, w, ""
 	return nil
 }
 
@@ -505,13 +522,20 @@ func (r *Resolver) backingOff(name string, now time.Time) bool {
 	return s.Auth || s.Throttled && now.Before(s.RetryAt)
 }
 
-// clearAuth lets every source stopped by a rejected token try once more on
-// the next poll.
-func (r *Resolver) clearAuth() {
+// onRefresh is a user's refresh: every source stopped by a rejected token
+// tries once more on the next poll, and every pipeline is asked for its
+// sources again, so a changed pipeline is picked up. Until a pipeline
+// answers (a skipped or failing account asks again next poll), its previous
+// sources stay in use for watched repos and env repos, so a failed
+// rediscovery loses nothing.
+func (r *Resolver) onRefresh() {
 	r.pollMu.Lock()
 	defer r.pollMu.Unlock()
 	for _, s := range r.status {
 		s.Auth = false
+	}
+	for k := range r.sources {
+		r.recheck[k] = true
 	}
 }
 
@@ -550,6 +574,9 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	warn := &warnings{}
 	warn.add(r.ticketWarn...)
 	warn.add(r.extraWarn...)
+	if r.extraErr != "" {
+		warn.add(r.extraErr)
+	}
 	tickets := slices.Clone(r.tickets)
 	for _, x := range r.extra {
 		if !slices.ContainsFunc(tickets, func(t model.Ticket) bool { return t.Key == x.Key }) {
@@ -590,8 +617,13 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	}
 
 	chains, unlinked := link.Link(tickets, prs, bases, r.cfg.Jira.Projects)
-	// A rate-limited GitHub is not asked for compares; misses are Unknown.
-	// link calls cmp from this goroutine only, so stop needs no lock.
+	r.cache.next()
+	defer r.cache.sweep()
+	// Compares run one at a time, here, after the fetches: the first poll
+	// of a session, with an empty cache, can take a while (left as is on
+	// purpose). A rate-limited GitHub, or one that rejected the token, is
+	// not asked for compares; misses are Unknown. link calls cmp from this goroutine
+	// only, so stop needs no lock.
 	stop := r.backingOff("github", now)
 	cmp := func(repo, base, head string) model.Inclusion {
 		if inc, ok := r.cache.get(repo, base, head); ok {
@@ -604,14 +636,19 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		if err != nil {
 			warn.add(fmt.Sprintf("compare %s %s...%s: %v", repo, base, head, err))
 			inc = model.InclusionUnknown
-			if d := r.retryAfter(err); d > 0 {
-				// Back off GitHub as a whole, from the rest of this poll's
-				// compares to the PR fetches until RetryAt.
+			if d := r.retryAfter(err); d > 0 || isAuth(err) {
+				// Stop GitHub as a whole, from the rest of this poll's
+				// compares to the PR fetches: until RetryAt, or for a
+				// rejected token until a refresh.
 				stop = true
 				r.log.Warn("source failed", "source", "github", "err", err)
 				st := r.status["github"]
 				st.OK, st.Err = false, short(err.Error())
-				st.Throttled, st.RetryAt = true, now.Add(d)
+				if isAuth(err) {
+					st.Auth, st.Err = true, "token rejected"
+				} else {
+					st.Throttled, st.RetryAt = true, r.now().Add(d)
+				}
 			}
 		}
 		r.cache.put(repo, base, head, inc)
@@ -711,16 +748,13 @@ func markUndiscovered(c *model.Chain, envs []int) {
 }
 
 // warnings collects one poll's warnings, deduplicated, in first-seen order.
-// Safe for concurrent use.
+// Only build's goroutine uses it.
 type warnings struct {
-	mu   sync.Mutex
 	seen map[string]bool
 	all  []string
 }
 
 func (w *warnings) add(msgs ...string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.seen == nil {
 		w.seen = map[string]bool{}
 	}
@@ -732,8 +766,4 @@ func (w *warnings) add(msgs ...string) {
 	}
 }
 
-func (w *warnings) list() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return slices.Clone(w.all)
-}
+func (w *warnings) list() []string { return slices.Clone(w.all) }
