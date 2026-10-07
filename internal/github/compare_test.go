@@ -47,9 +47,9 @@ func TestCompare(t *testing.T) {
 	}
 }
 
-func TestCompareSkipsTheETagCache(t *testing.T) {
+func TestCompareSendsNoConditionalRequest(t *testing.T) {
 	// The resolver caches compare results by SHA pair, so Compare never sends
-	// If-None-Match.
+	// If-None-Match and every call reaches the server.
 	hits := 0
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		hits++

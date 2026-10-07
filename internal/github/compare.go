@@ -26,7 +26,7 @@ func (c *Client) Compare(ctx context.Context, repo, base, head string) (model.In
 	var out struct {
 		Status string `json:"status"`
 	}
-	err := c.doWith(ctx, c.plain, http.MethodGet, "/repos/"+repo+"/compare/"+base+"..."+head+"?per_page=1", nil, &out)
+	err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/compare/"+base+"..."+head+"?per_page=1", nil, &out)
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
 		return model.InclusionUnknown, nil
