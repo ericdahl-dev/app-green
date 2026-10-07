@@ -223,6 +223,7 @@ type fakeDeployer struct {
 	histSpecs    [][]aws.StageSpec
 	health       map[string]model.Health // by first service name
 	healthErr    error
+	during       func() // when set, History calls it first (to move the clock mid-poll)
 }
 
 func (f *fakeDeployer) Sources(_ context.Context, pipeline string) (map[string]string, error) {
@@ -240,6 +241,12 @@ func (f *fakeDeployer) Sources(_ context.Context, pipeline string) (map[string]s
 }
 
 func (f *fakeDeployer) History(_ context.Context, pipeline string, _ map[string]string, specs ...aws.StageSpec) (map[string][]model.Deploy, []string, error) {
+	f.mu.Lock()
+	during := f.during
+	f.mu.Unlock()
+	if during != nil {
+		during()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.histCalls++

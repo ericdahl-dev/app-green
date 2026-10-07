@@ -80,9 +80,10 @@ type Snapshot struct {
 // prSince is how far back RecentPRs looks.
 const prSince = 30 * 24 * time.Hour
 
-// AWSThrottleBackoff is the least time an AWS account is skipped after AWS
-// throttles it (a longer poll interval wins); AWS errors carry no
-// Retry-After.
+// AWSThrottleBackoff is the floor of the backoff after AWS throttles an
+// account (AWS errors carry no Retry-After): the account is skipped until
+// max(AWSThrottleBackoff, poll interval) + poll interval after the error is
+// recorded. See retryAfter for why.
 const AWSThrottleBackoff = time.Minute
 
 // maxErr caps AdapterStatus.Err, in runes.
@@ -453,7 +454,9 @@ func (r *Resolver) fetchAccount(ctx context.Context, account string, known map[c
 	return res
 }
 
-// record updates a source's status after a poll's attempt.
+// record updates a source's status after a poll's attempt. At is the poll's
+// time; RetryAt runs from now, when the error is recorded, so a slow poll
+// does not eat into a backoff.
 func (r *Resolver) record(name string, err error, now time.Time) {
 	s := r.status[name]
 	if err == nil {
@@ -467,7 +470,7 @@ func (r *Resolver) record(name string, err error, now time.Time) {
 		s.Auth, s.Err = true, "token rejected"
 	}
 	if d := r.retryAfter(err); d > 0 {
-		s.Throttled, s.RetryAt = true, now.Add(d)
+		s.Throttled, s.RetryAt = true, r.now().Add(d)
 	}
 }
 
@@ -491,9 +494,13 @@ func (r *Resolver) clearAuth() {
 	}
 }
 
-// retryAfter is how long err asks the source to back off: Retry-After from
-// a Jira or GitHub rate limit, the longer of AWSThrottleBackoff and the poll
-// interval for AWS throttling (so at least one poll is skipped), else 0.
+// retryAfter is how long err asks the source to back off, from when the
+// error is recorded: Retry-After from a Jira or GitHub rate limit, else
+// max(AWSThrottleBackoff, interval) + interval for AWS throttling, else 0.
+// The extra interval makes sure at least one poll is skipped: backoff is
+// checked when a poll starts, and the next poll starts one interval after
+// this one ends, so a backoff of exactly one interval would already have
+// expired by then.
 func (r *Resolver) retryAfter(err error) time.Duration {
 	var je *jira.APIError
 	if errors.As(err, &je) && je.RetryAfter > 0 {
@@ -504,7 +511,7 @@ func (r *Resolver) retryAfter(err error) time.Duration {
 		return ge.RetryAfter
 	}
 	if aws.IsThrottled(err) {
-		return max(AWSThrottleBackoff, r.cfg.PollInterval())
+		return max(AWSThrottleBackoff, r.interval) + r.interval
 	}
 	return 0
 }
@@ -535,13 +542,20 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		bases = append(bases, d.context...)
 		warn.add(d.warn...)
 	}
-	var histories []model.EnvHistory
-	for _, e := range r.cfg.Envs() {
+	var (
+		histories    []model.EnvHistory
+		undiscovered []int // indexes of envs with no config repos and no sources yet
+	)
+	for i, e := range r.cfg.Envs() {
 		k := config.PipelineKey{Account: e.Account, Pipeline: e.Pipeline}
 		if len(e.Repos) == 0 {
 			// Config repos win; without them, the pipeline's source actions
 			// say what it deploys (better than guessing from history).
-			e.Repos = aws.Repos(r.sources[k])
+			src, ok := r.sources[k]
+			if !ok {
+				undiscovered = append(undiscovered, i)
+			}
+			e.Repos = aws.Repos(src)
 		}
 		p := r.pipelines[k]
 		h := r.health[e.ID()]
@@ -580,6 +594,7 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	}
 	for i := range chains {
 		chains[i] = link.Slots(chains[i], histories, cmp)
+		markUndiscovered(&chains[i], undiscovered)
 	}
 
 	status := make([]AdapterStatus, len(r.order))
@@ -592,6 +607,25 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		Status:   status,
 		Warnings: warn.list(),
 		At:       now,
+	}
+}
+
+// markUndiscovered makes each env in envs (indexes into c.Slots) an
+// applying SlotUnknown when c has a merged PR on its way to the default
+// branch. Such an env has no config repos and its pipeline's sources were
+// never discovered (an expired SSO session at startup, say), so nobody knows
+// what it deploys; leaving its slot out would let the other envs alone show
+// a false green. Env.Repos stays empty. Such an env has no history either
+// (History is only asked once Sources answered), so nothing better is lost.
+func markUndiscovered(c *model.Chain, envs []int) {
+	if len(envs) == 0 || !slices.ContainsFunc(c.PRs, func(p model.PR) bool {
+		return p.State == model.PRMerged && p.EffectiveSHA != ""
+	}) {
+		return
+	}
+	for _, i := range envs {
+		s := &c.Slots[i]
+		*s = model.EnvSlot{Env: s.Env, Health: s.Health, State: model.SlotUnknown, Applies: true}
 	}
 }
 

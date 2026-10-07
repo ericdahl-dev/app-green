@@ -248,7 +248,7 @@ func TestThrottledSourceSkippedUntilRetryAt(t *testing.T) {
 			calls: func(h *harness) int { h.host.mu.Lock(); defer h.host.mu.Unlock(); return h.host.prCalls },
 		},
 		{
-			name: "aws throttling", source: "aws stage-acct", retry: resolver.AWSThrottleBackoff,
+			name: "aws throttling", source: "aws stage-acct", retry: resolver.AWSThrottleBackoff + time.Minute, // + the default interval
 			fail: func(h *harness, on bool) {
 				h.stage.set(func(f *fakeDeployer) {
 					f.histErr = nil

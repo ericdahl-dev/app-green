@@ -28,8 +28,8 @@ func TestAWSThrottleBackoffIsAtLeastPollInterval(t *testing.T) {
 
 	snap := h.r.Poll(context.Background())
 
-	if s := statusOf(t, snap, "aws stage-acct"); !s.Throttled || !s.RetryAt.Equal(t0.Add(90*time.Second)) {
-		t.Errorf("status = %+v, want throttled until poll time + 90s", s)
+	if s := statusOf(t, snap, "aws stage-acct"); !s.Throttled || !s.RetryAt.Equal(t0.Add(180*time.Second)) {
+		t.Errorf("status = %+v, want throttled until poll time + 90s + 90s", s)
 	}
 }
 
@@ -187,5 +187,49 @@ func TestRateLimitedCompareBacksOffGitHub(t *testing.T) {
 	}
 	if g := statusOf(t, snap, "github"); !g.OK || g.Throttled {
 		t.Errorf("github status = %+v, want OK", g)
+	}
+}
+
+// Polls land one interval after the previous poll ends, so a backoff of
+// exactly one interval would expire just before the next poll. AWS
+// throttling must skip that poll.
+func TestAWSThrottleSkipsTheNextPoll(t *testing.T) {
+	h := newHarness(t, nil, testEnv)
+	h.withShippedChain()
+	h.r.Poll(context.Background()) // sources known: the next poll goes straight to History
+	h.clock.Advance(time.Minute)
+	h.stage.set(func(f *fakeDeployer) {
+		f.histErr = &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Rate exceeded"}
+	})
+	h.r.Poll(context.Background())
+	_, before := h.stage.calls()
+
+	h.clock.Advance(time.Minute + 2*time.Second) // the interval plus the poll's own time
+	snap := h.r.Poll(context.Background())
+
+	if _, got := h.stage.calls(); got != before {
+		t.Errorf("History calls = %d, want %d (the next poll skips the account)", got, before)
+	}
+	if s := statusOf(t, snap, "aws stage-acct"); !s.Throttled {
+		t.Errorf("status = %+v, want still throttled", s)
+	}
+}
+
+// Backoff runs from when the error is recorded, not from when the poll
+// started: a slow poll must not eat into it.
+func TestAWSThrottleBackoffFromRecordTime(t *testing.T) {
+	h := newHarness(t, nil, testEnv)
+	h.withShippedChain()
+	h.r.Poll(context.Background()) // sources known: the next poll goes straight to History
+	h.stage.set(func(f *fakeDeployer) {
+		f.histErr = &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Rate exceeded"}
+		f.during = func() { h.clock.Advance(20 * time.Second) }
+	})
+
+	snap := h.r.Poll(context.Background())
+
+	want := t0.Add(20*time.Second + resolver.AWSThrottleBackoff + time.Minute)
+	if s := statusOf(t, snap, "aws stage-acct"); !s.RetryAt.Equal(want) {
+		t.Errorf("RetryAt = %v, want %v (from when the error came back)", s.RetryAt, want)
 	}
 }
