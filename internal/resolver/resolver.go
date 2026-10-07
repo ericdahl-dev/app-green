@@ -246,6 +246,11 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, known) })
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		// Shutting down: what failed failed because of ctx, so record
+		// nothing and ask nothing more.
+		return r.build(ctx, now)
+	}
 
 	if githubRan {
 		for repo, d := range gr.repos {
@@ -510,6 +515,9 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	cmp := func(repo, base, head string) model.Inclusion {
 		if inc, ok := r.cache.get(repo, base, head); ok {
 			return inc
+		}
+		if ctx.Err() != nil {
+			return model.InclusionUnknown
 		}
 		inc, err := r.ad.Code.Compare(ctx, repo, base, head)
 		if err != nil {

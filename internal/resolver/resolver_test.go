@@ -566,3 +566,26 @@ func TestAccountWithoutClientIsAStatusError(t *testing.T) {
 		t.Errorf("stage-acct status = %+v, want OK", s)
 	}
 }
+
+func TestCanceledPollRecordsNoFailures(t *testing.T) {
+	var buf safeBuffer
+	h := newHarness(t, slog.New(slog.NewTextHandler(&buf, nil)))
+	h.withShippedChain()
+	h.r.Poll(context.Background())
+	// Fetches cut short by shutdown fail with the context's error.
+	h.tracker.set(func(f *fakeTracker) { f.myErr = context.Canceled })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	snap := h.r.Poll(ctx)
+
+	if j := statusOf(t, snap, "jira"); !j.OK {
+		t.Errorf("jira status = %+v, want still OK: a canceled poll is not a failure", j)
+	}
+	if len(snap.Chains) != 1 {
+		t.Errorf("chains = %d, want the last good 1", len(snap.Chains))
+	}
+	if strings.Contains(buf.String(), "source failed") {
+		t.Errorf("log = %q, want no source failure", buf.String())
+	}
+}
