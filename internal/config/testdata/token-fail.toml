@@ -1,0 +1,25 @@
+# Token commands that fail: one exits non-zero, one prints only whitespace.
+[settings]
+  partial_prod_after = "90m"
+
+[jira]
+  site = "https://example.atlassian.net"
+  email = "me@example.com"
+  token_command = "echo sekrit-token; echo boom >&2; exit 3"
+  projects = ["ABC", "XY_2"]
+
+[github]
+  author = "me"
+  token_command = "printf '  \\n'"
+  repos = ["acme/app"]
+
+[[aws.accounts]]
+  name = "stage-acct"
+  profile = "stage"
+  region = "us-east-1"
+
+[[envs]]
+  account = "stage-acct"
+  pipeline = "app-pipeline"
+  stage = "Test"
+  deploy_action = "Deploy"
