@@ -110,10 +110,7 @@ func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
 	case key.Matches(msg, keys.down):
 		m.cursor = min(m.cursor+1, max(m.items()-1, 0))
 	case key.Matches(msg, keys.refresh):
-		select {
-		case m.refresh <- struct{}{}:
-		default: // a refresh is already pending
-		}
+		m.requestRefresh()
 	case key.Matches(msg, keys.enter):
 		if m.snap != nil && m.cursor < len(m.snap.Chains) {
 			m.detail, m.dsel, m.doffset = m.snap.Chains[m.cursor].Ticket.Key, 0, 0
@@ -176,4 +173,12 @@ func (m App) target() string {
 		return m.snap.Unlinked[i-len(m.snap.Chains)].URL
 	}
 	return ""
+}
+
+// requestRefresh asks the resolver to poll now, without blocking.
+func (m App) requestRefresh() {
+	select {
+	case m.refresh <- struct{}{}:
+	default: // a refresh is already pending
+	}
 }

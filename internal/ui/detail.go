@@ -13,7 +13,7 @@ import (
 )
 
 // detailKeys is the key line at the bottom of the detail screen.
-const detailKeys = "↑/↓ move  o open  esc back  q quit"
+const detailKeys = "↑/↓ move  o open  r refresh  esc back  q quit"
 
 // chain is the chain whose ticket key is key, and whether there is one.
 func (m App) chain(key string) (model.Chain, bool) {
@@ -35,6 +35,8 @@ func (m App) detailKey(msg tea.KeyMsg) (App, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, keys.back):
 		m.detail = ""
+	case key.Matches(msg, keys.refresh):
+		m.requestRefresh()
 	case key.Matches(msg, keys.up):
 		// Above the first item (or with none) the window scrolls instead.
 		if m.dsel == 0 {
@@ -55,7 +57,11 @@ func (m App) detailKey(msg tea.KeyMsg) (App, tea.Cmd) {
 		}
 	case key.Matches(msg, keys.open):
 		c, _ := m.chain(m.detail)
-		if u := detailTarget(c, m.dsel); u != "" {
+		sel := m.dsel
+		if !m.selectionVisible() {
+			sel = -1 // o acts only on a selection you can see: else the ticket
+		}
+		if u := detailTarget(c, sel); u != "" {
 			if err := m.openURL(u); err != nil {
 				m.err = "open failed: " + err.Error()
 			}
@@ -210,6 +216,13 @@ func (m App) showSelection() App {
 		m.doffset = sel - budget + 1
 	}
 	return m
+}
+
+// selectionVisible reports whether the selected line is on screen.
+func (m App) selectionVisible() bool {
+	_, sel := m.detailBody(defaultWidth)
+	budget := m.bodyHeight()
+	return sel >= 0 && (budget < 0 || sel >= m.doffset && sel < m.doffset+budget)
 }
 
 // detailScroll keeps the detail's window within its lines.

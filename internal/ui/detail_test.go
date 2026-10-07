@@ -13,7 +13,7 @@ import (
 )
 
 // detailKeys is the detail screen's key line.
-const detailKeys = "↑/↓ move  o open  esc back  q quit"
+const detailKeys = "↑/↓ move  o open  r refresh  esc back  q quit"
 
 var (
 	stageTest = model.Env{Account: "stage-acct", Region: "us-east-1", Pipeline: "app-pipeline", Stage: "Test", Order: 0}
@@ -364,5 +364,41 @@ func TestDetailCleansText(t *testing.T) {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)
 		}
+	}
+}
+
+func TestDetailRefreshKey(t *testing.T) {
+	refresh := make(chan struct{}, 1)
+	m := ui.NewApp(make(chan resolver.Snapshot), refresh, noOpen(t)).WithClock(func() time.Time { return now })
+	m = press(t, update(t, m, fxDetailSnapshot()), "j", "enter", "r")
+	if len(refresh) != 1 {
+		t.Fatalf("r on the detail screen sends on the refresh channel")
+	}
+	m = press(t, m, "r") // the buffer is full: this must not block
+	if ls := trimmed(m); !strings.HasPrefix(ls[1], "ABC-19") {
+		t.Errorf("r stays on the detail screen:\n%s", m.View())
+	}
+}
+
+func TestDetailOpenHiddenSelection(t *testing.T) {
+	snap := fxDetailSnapshot()
+	c := &snap.Chains[1]
+	for range 4 {
+		c.Flags = append(c.Flags, model.Flag{Level: model.Yellow, Kind: model.FlagStaleReview, Reason: "more"})
+	}
+	o := &opened{}
+	m := update(t, detailWith(t, o, snap), tea.WindowSizeMsg{Width: 100, Height: 8})
+	m = press(t, m, "j", "j", "j", "j", "j") // the last item, still on screen
+	m = press(t, m, "o")
+	m = press(t, m, "j", "j", "j", "j", "j", "j") // scroll on until it is hidden
+	for _, l := range viewLines(m) {
+		if strings.HasPrefix(l, ">") {
+			t.Fatalf("the selection should be scrolled out:\n%s", m.View())
+		}
+	}
+	press(t, m, "o")
+	want := []string{resolver.PipelineURL(prodProd), "https://jira.example.com/browse/ABC-19"}
+	if strings.Join(o.urls, " ") != strings.Join(want, " ") {
+		t.Errorf("opened\n got %q\nwant %q", o.urls, want)
 	}
 }
