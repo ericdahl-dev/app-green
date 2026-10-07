@@ -23,6 +23,9 @@ func (m App) View() string {
 	if width <= 0 {
 		width = defaultWidth
 	}
+	if m.detail != "" {
+		return m.detailView(width)
+	}
 	now := m.now()
 	var status []resolver.AdapterStatus
 	var body []string
@@ -51,7 +54,7 @@ func (m App) View() string {
 		body = body[m.offset:min(m.offset+budget, len(body))]
 	}
 	lines := append([]string{m.styles.Header(status, now, width)}, body...)
-	return strings.Join(append(lines, m.footer(width)), "\n")
+	return strings.Join(append(lines, m.footer(footerKeys, width)), "\n")
 }
 
 // mark is line, selected when item i is under the cursor.
@@ -78,13 +81,7 @@ func OpenTarget(c model.Chain, pipelineURL func(model.Env) string) string {
 	case f.Slot != nil:
 		u = pipelineURL(f.Slot.Env)
 	case f.PR != nil && f.Kind == model.FlagCheckFailed:
-		u = ChecksPage(*f.PR)
-		for _, ch := range f.PR.Failing {
-			if ch.URL != "" {
-				u = ch.URL
-				break
-			}
-		}
+		u = checksTarget(*f.PR)
 	case f.PR != nil:
 		u = f.PR.URL
 	}
@@ -94,13 +91,26 @@ func OpenTarget(c model.Chain, pipelineURL func(model.Env) string) string {
 	return u
 }
 
-// footer is the key line, then the open error and the warnings count, if
-// any, cut to width. The
-// key line gives way first.
-func (m App) footer(width int) string {
+// checksTarget is the page for pr's failing checks: the first failing check's
+// own page, else ChecksPage(pr).
+func checksTarget(pr model.PR) string {
+	for _, ch := range pr.Failing {
+		if ch.URL != "" {
+			return ch.URL
+		}
+	}
+	return ChecksPage(pr)
+}
+
+// footer is the key line keys, then the open error, the note and the
+// warnings count, if any, cut to width. The key line gives way first.
+func (m App) footer(footerKeys string, width int) string {
 	var extra []string
 	if m.err != "" {
 		extra = append(extra, m.styles.red.Render(clean(m.err)))
+	}
+	if m.note != "" {
+		extra = append(extra, m.styles.dim.Render(clean(m.note)))
 	}
 	if m.snap != nil && len(m.snap.Warnings) > 0 {
 		n := len(m.snap.Warnings)

@@ -24,6 +24,10 @@ type App struct {
 	err           string             // the last open's error, until the next key
 	offset        int                // the first body line shown
 	width, height int
+
+	detail string // the ticket key whose detail screen is open, "" for the list
+	dsel   int    // the selected item of the detail screen
+	note   string // why the detail screen closed, until the next key
 }
 
 // NewApp builds the App. snaps is the resolver's out channel, refresh its
@@ -66,8 +70,12 @@ func (m App) update(msg tea.Msg) (App, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case resolver.Snapshot:
 		id := m.itemID(m.cursor)
+		before, _ := m.chain(m.detail)
 		m.snap = &msg
 		m.cursor = m.find(id)
+		if m.detail != "" {
+			m = m.refreshDetail(before)
+		}
 		return m, waitForSnapshot(m.snaps)
 	case tea.KeyMsg:
 		return m.key(msg)
@@ -77,17 +85,22 @@ func (m App) update(msg tea.Msg) (App, tea.Cmd) {
 
 // keys are the list's key bindings.
 var keys = struct {
-	up, down, refresh, quit, open key.Binding
+	up, down, refresh, quit, open, enter, back key.Binding
 }{
 	up:      key.NewBinding(key.WithKeys("up", "k")),
 	down:    key.NewBinding(key.WithKeys("down", "j")),
 	refresh: key.NewBinding(key.WithKeys("r")),
 	open:    key.NewBinding(key.WithKeys("o")),
+	enter:   key.NewBinding(key.WithKeys("enter")),
+	back:    key.NewBinding(key.WithKeys("esc", "backspace")),
 	quit:    key.NewBinding(key.WithKeys("q", "ctrl+c")),
 }
 
 func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
-	m.err = ""
+	m.err, m.note = "", ""
+	if m.detail != "" {
+		return m.detailKey(msg)
+	}
 	switch {
 	case key.Matches(msg, keys.quit):
 		return m, tea.Quit
@@ -99,6 +112,10 @@ func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
 		select {
 		case m.refresh <- struct{}{}:
 		default: // a refresh is already pending
+		}
+	case key.Matches(msg, keys.enter):
+		if m.snap != nil && m.cursor < len(m.snap.Chains) {
+			m.detail, m.dsel = m.snap.Chains[m.cursor].Ticket.Key, 0
 		}
 	case key.Matches(msg, keys.open):
 		if u := m.target(); u != "" {

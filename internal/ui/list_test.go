@@ -124,6 +124,10 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -522,16 +526,19 @@ func TestAppWaitsForSnapshots(t *testing.T) {
 }
 
 func TestAppInertKeys(t *testing.T) {
-	// Keys for later tasks do nothing yet, loaded or not, and o, j and k on
-	// an empty list are safe.
+	// Keys for later tasks do nothing yet, loaded or not, and enter, o, j
+	// and k on an empty list are safe.
 	for _, m := range []ui.App{newApp(t), update(t, newApp(t), resolver.Snapshot{}), update(t, newApp(t), fxSnapshot())} {
 		before := m.View()
-		if m = press(t, m, "enter", "f", "a", "x", "t"); m.View() != before {
-			t.Errorf("enter/f/a/x/t changed the view:\n%s", m.View())
+		if m = press(t, m, "f", "a", "x", "t"); m.View() != before {
+			t.Errorf("f/a/x/t changed the view:\n%s", m.View())
 		}
 	}
 	for _, m := range []ui.App{newApp(t), update(t, newApp(t), resolver.Snapshot{})} {
-		press(t, m, "j", "k", "o") // noOpen fails on any open
+		before := m.View()
+		if m = press(t, m, "enter", "j", "k", "o"); m.View() != before { // noOpen fails on any open
+			t.Errorf("enter/j/k/o changed an empty list:\n%s", m.View())
+		}
 	}
 }
 
