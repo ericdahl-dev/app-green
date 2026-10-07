@@ -388,3 +388,57 @@ func TestHistoryRetriedStageIsOneDeploy(t *testing.T) {
 		t.Errorf("FinishedAt = %v, want the retry's", prod[0].FinishedAt)
 	}
 }
+
+// CodePipeline has no Rejected action status: a rejected manual approval
+// (or one that timed out) is an approval action execution that is Failed.
+func TestHistoryRejectedApproval(t *testing.T) {
+	f := &fakePipeline{
+		execs: &codepipeline.ListPipelineExecutionsOutput{PipelineExecutionSummaries: []types.PipelineExecutionSummary{
+			execSummary("exec3", types.PipelineExecutionStatusFailed, allRevs("ccc")...),
+			execSummary("exec2", types.PipelineExecutionStatusSucceeded, allRevs("bbb")...),
+		}},
+		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
+			actionExec("exec3", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusFailed, at(36)),
+			actionExec("exec3", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(34)),
+			actionExec("exec2", "Production", "deploy", types.ActionExecutionStatusSucceeded, at(25)),
+			actionExec("exec2", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusSucceeded, at(23)),
+			actionExec("exec2", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(20)),
+		}}},
+	}
+	got, warns, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec, prodSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warns) > 0 {
+		t.Errorf("warnings: %v", warns)
+	}
+	prod := got["Production"]
+	assertStatuses(t, prod, []string{"exec3", "exec2"}, []model.DeployStatus{model.DeployRejected, model.DeploySucceeded})
+	if !prod[0].FinishedAt.Equal(*at(36)) || prod[0].Revisions["acme/app"] != "ccc" || prod[0].ApprovalToken != "" {
+		t.Errorf("rejected deploy = %+v", prod[0])
+	}
+	ok := model.DeploySucceeded
+	assertStatuses(t, got["Test"], []string{"exec3", "exec2"}, []model.DeployStatus{ok, ok})
+	if f.stateCalls != 0 {
+		t.Errorf("GetPipelineState calls = %d, want 0", f.stateCalls)
+	}
+}
+
+func TestHistoryRetriedApprovalWaitsAgain(t *testing.T) {
+	f := approvalFake()
+	page := f.actionPages[0]
+	// exec3's approval failed once, then the stage was retried.
+	failed := actionExec("exec3", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusFailed, at(33))
+	failed.ActionExecutionId = awssdk.String("exec3-approval-1")
+	page.ActionExecutionDetails = append(page.ActionExecutionDetails, failed)
+	got, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, prodSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod := got["Production"]
+	assertStatuses(t, prod, []string{"exec3", "exec2", "exec1"},
+		[]model.DeployStatus{model.DeployAwaitingApproval, model.DeploySucceeded, model.DeployFailed})
+	if prod[0].ApprovalToken != "tok-3" {
+		t.Errorf("token = %q", prod[0].ApprovalToken)
+	}
+}

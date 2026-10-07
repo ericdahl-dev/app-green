@@ -42,6 +42,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			continue // this Env deploys none of the chain's merged repos
 		}
 		switch {
+		case s.State == model.SlotFailed && s.Deploy != nil && s.Deploy.Status == model.DeployRejected:
+			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s approval rejected", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotFailed:
 			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s failed", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotRolledBack:

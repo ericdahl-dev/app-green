@@ -253,3 +253,26 @@ func TestCheckExpectedSortsAfterPartialProdBeforeReadyToMerge(t *testing.T) {
 		t.Errorf("FlagCheckExpected = %d, want between FlagPartialProd and FlagReadyToMerge", model.FlagCheckExpected)
 	}
 }
+
+func TestRejectedApprovalFlagIsRedPipelineFailed(t *testing.T) {
+	rejected := &model.Deploy{ExecutionID: "exec3", Status: model.DeployRejected}
+	failed := &model.Deploy{ExecutionID: "exec2", Status: model.DeployFailed}
+	cases := []struct {
+		deploy *model.Deploy
+		reason string
+	}{
+		{rejected, "a Production approval rejected"},
+		{failed, "a Production failed"},
+		{nil, "a Production failed"},
+	}
+	for _, tc := range cases {
+		c := model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotFailed, Deploy: tc.deploy}}}
+		fs := rules.Flags(c, now, rules.Thresholds{})
+		if len(fs) != 1 {
+			t.Fatalf("flags %v, want one pipeline-failed flag", kinds(fs))
+		}
+		if f := fs[0]; f.Level != model.Red || f.Kind != model.FlagPipelineFailed || f.Slot == nil || f.Reason != tc.reason {
+			t.Errorf("flag %+v, want red pipeline failed with reason %q", f, tc.reason)
+		}
+	}
+}

@@ -143,13 +143,16 @@ func oldestStart(summaries []types.PipelineExecutionSummary) time.Time {
 // stageDeploys returns spec's deploys from its deploy action's executions
 // (one per execution, the latest attempt), and the approval action
 // executions still waiting for a run that has not reached the deploy action.
+// A run whose latest approval attempt failed (was rejected) and that has not
+// reached the deploy action is a DeployRejected deploy.
 // Runs outside the window are dropped. An ended run (superseded, canceled,
 // stopped) keeps the actions that finished and drops those still showing
 // InProgress: they never will finish.
 func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]execution) ([]model.Deploy, []types.ActionExecutionDetail) {
 	deploys := []model.Deploy{}
-	deployed := map[string]int{} // execution ID → index in deploys
-	var waiting []types.ActionExecutionDetail
+	deployed := map[string]int{}                          // execution ID → index in deploys
+	approvals := map[string]types.ActionExecutionDetail{} // execution ID → latest approval attempt
+	var approvalIDs []string                              // in listing order, for stable output
 	for _, a := range acts {
 		id := awssdk.ToString(a.PipelineExecutionId)
 		e, known := execs[id]
@@ -179,15 +182,34 @@ func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[
 			}
 			deployed[id] = len(deploys)
 			deploys = append(deploys, d)
-		case spec.ApprovalAction != "" && stage == spec.ApprovalStage && action == spec.ApprovalAction &&
-			a.Status == types.ActionExecutionStatusInProgress:
-			waiting = append(waiting, a)
+		case spec.ApprovalAction != "" && stage == spec.ApprovalStage && action == spec.ApprovalAction:
+			prev, seen := approvals[id]
+			if !seen {
+				approvalIDs = append(approvalIDs, id)
+			}
+			if !seen || awssdk.ToTime(a.LastUpdateTime).After(awssdk.ToTime(prev.LastUpdateTime)) {
+				approvals[id] = a
+			}
 		}
 	}
 	var pending []types.ActionExecutionDetail
-	for _, a := range waiting {
-		if _, ok := deployed[awssdk.ToString(a.PipelineExecutionId)]; !ok {
+	for _, id := range approvalIDs {
+		a := approvals[id]
+		if _, ok := deployed[id]; ok {
+			continue
+		}
+		switch a.Status {
+		case types.ActionExecutionStatusInProgress:
 			pending = append(pending, a)
+		case types.ActionExecutionStatusFailed:
+			// CodePipeline has no Rejected status: a rejected (or timed
+			// out) manual approval is a Failed action execution.
+			deploys = append(deploys, model.Deploy{
+				ExecutionID: id,
+				Status:      model.DeployRejected,
+				Revisions:   maps.Clone(execs[id].revs),
+				FinishedAt:  awssdk.ToTime(a.LastUpdateTime),
+			})
 		}
 	}
 	return deploys, pending

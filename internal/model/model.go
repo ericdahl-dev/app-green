@@ -137,12 +137,16 @@ const (
 	DeployFailed           DeployStatus = "Failed"
 	DeployInProgress       DeployStatus = "InProgress"
 	DeployAwaitingApproval DeployStatus = "AwaitingApproval"
+	// DeployRejected: the approval gating this Env was rejected (or timed
+	// out), so the run never reached the Env's deploy action.
+	DeployRejected DeployStatus = "Rejected"
 )
 
 // Deploy is one pipeline execution as seen from one Env's stage, as the
 // adapter builds it: Status is the stage's deploy action status, except that
 // a run paused at the stage's approval action is DeployAwaitingApproval with
-// that action's ApprovalToken. Adapters drop actions that never finished
+// that action's ApprovalToken, and a run whose approval was rejected is
+// DeployRejected. Adapters drop actions that never finished
 // (abandoned, or left in progress by a run that ended), but keep what a
 // superseded, stopped or canceled run did finish: it really ran.
 type Deploy struct {
