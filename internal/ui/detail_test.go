@@ -108,7 +108,7 @@ func TestDetailEnvStates(t *testing.T) {
 			c.Slots = []model.EnvSlot{tt.slot}
 			snap := resolver.Snapshot{Chains: []model.Chain{c}, At: now}
 			ls := trimmed(press(t, update(t, newApp(t), snap), "enter"))
-			if want := "> stage-acct  Test  " + tt.want; ls[2] != want {
+			if want := " >stage-acct  Test  " + tt.want; ls[2] != want {
 				t.Errorf("\n got %q\nwant %q", ls[2], want)
 			}
 		})
@@ -120,7 +120,7 @@ func TestDetailView(t *testing.T) {
 	want := []string{
 		ui.RenderHeader(snap.Status, now, 100),
 		"ABC-19  Drop the form-level opt-outs" + strings.Repeat(" ", 100-36-17) + "Jira: Code Review",
-		"> PR #330  acme/app  merged 2d ago  ✓ checks  ✓ approved",
+		" >PR #330  acme/app  merged 2d ago  ✓ checks  ✓ approved",
 		"  PR #331  acme/app  open  ✗ rspec, CodeQL  changes requested  draft",
 		"  stage-acct  Test        ✓ deployed 1d ago (aaaa111)  ECS 2/2",
 		"  stage-acct  Production  ‖ awaiting approval since 1d",
@@ -145,7 +145,7 @@ func TestDetailStale(t *testing.T) {
 	if want := "~ stale: acme/app not refreshed since 11:58:00"; ls[2] != want {
 		t.Errorf("stale line\n got %q\nwant %q", ls[2], want)
 	}
-	if !strings.HasPrefix(ls[3], "> PR #330") {
+	if !strings.HasPrefix(ls[3], " >PR #330") {
 		t.Errorf("the PRs follow the stale line: %q", ls[3])
 	}
 
@@ -327,7 +327,7 @@ func TestDetailScroll(t *testing.T) {
 	if got := cursorLine(t, m); !strings.Contains(got, "prod-acct   Production") {
 		t.Fatalf("selection: %q", got)
 	}
-	if !strings.HasPrefix(first(m), "> PR #330") && !strings.HasPrefix(first(m), "  PR #330") {
+	if !strings.HasPrefix(first(m), " >PR #330") && !strings.HasPrefix(first(m), "  PR #330") {
 		t.Errorf("scrolled just enough to show the selection:\n%s", body(m))
 	}
 	m = press(t, m, "j", "j", "j", "j", "j") // past the last item: the flags scroll in
@@ -392,7 +392,7 @@ func TestDetailOpenHiddenSelection(t *testing.T) {
 	m = press(t, m, "o")
 	m = press(t, m, "j", "j", "j", "j", "j", "j") // scroll on until it is hidden
 	for _, l := range viewLines(m) {
-		if strings.HasPrefix(l, ">") {
+		if isCursor(l) {
 			t.Fatalf("the selection should be scrolled out:\n%s", m.View())
 		}
 	}

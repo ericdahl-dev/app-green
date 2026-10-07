@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,8 +34,11 @@ type App struct {
 
 // NewApp builds the App. snaps is the resolver's out channel, refresh its
 // refresh channel (sent without blocking), and openURL opens a page in the
-// browser.
+// browser (nil opens nothing).
 func NewApp(snaps <-chan resolver.Snapshot, refresh chan<- struct{}, openURL func(string) error) App {
+	if openURL == nil {
+		openURL = func(string) error { return nil }
+	}
 	return App{styles: DefaultStyles(), now: time.Now, snaps: snaps, refresh: refresh, openURL: openURL}
 }
 
@@ -78,6 +82,8 @@ func (m App) update(msg tea.Msg) (App, tea.Cmd) {
 			m = m.refreshDetail(before)
 		}
 		return m, waitForSnapshot(m.snaps)
+	case openFailedMsg:
+		m.err = "open failed: " + msg.err.Error()
 	case tea.KeyMsg:
 		return m.key(msg)
 	}
@@ -116,11 +122,7 @@ func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
 			m.detail, m.dsel, m.doffset = m.snap.Chains[m.cursor].Ticket.Key, 0, 0
 		}
 	case key.Matches(msg, keys.open):
-		if u := m.target(); u != "" {
-			if err := m.openURL(u); err != nil {
-				m.err = "open failed: " + err.Error()
-			}
-		}
+		return m, m.open(m.target(), m.cursorTicketURL())
 	}
 	return m, nil
 }
@@ -175,10 +177,54 @@ func (m App) target() string {
 	return ""
 }
 
+// webPage reports whether u is an absolute http or https URL with a host.
+// Anything else (a file: URL, or "-x" that a browser launcher could take for
+// a flag) is never opened: the URLs come from Jira, GitHub and AWS.
+func webPage(u string) bool {
+	p, err := url.Parse(u)
+	return err == nil && (p.Scheme == "http" || p.Scheme == "https") && p.Host != ""
+}
+
+// cursorTicketURL is the ticket URL of the chain under the cursor, "" on an
+// unlinked PR or with no snapshot.
+func (m App) cursorTicketURL() string {
+	if m.snap == nil || m.cursor >= len(m.snap.Chains) {
+		return ""
+	}
+	return m.snap.Chains[m.cursor].Ticket.URL
+}
+
 // requestRefresh asks the resolver to poll now, without blocking.
 func (m App) requestRefresh() {
 	select {
 	case m.refresh <- struct{}{}:
 	default: // a refresh is already pending
+	}
+}
+
+// openFailedMsg reports that the browser could not open a page.
+// Adapted from jira-green internal/ui/dashboard.go.
+type openFailedMsg struct{ err error }
+
+// open is a command that opens the first of urls that is a web page (see
+// webPage) in the browser, reporting a failure as openFailedMsg; nil when
+// none is. Update never opens a page itself.
+func (m App) open(urls ...string) tea.Cmd {
+	var u string
+	for _, c := range urls {
+		if webPage(c) {
+			u = c
+			break
+		}
+	}
+	if u == "" {
+		return nil
+	}
+	openURL := m.openURL
+	return func() tea.Msg {
+		if err := openURL(u); err != nil {
+			return openFailedMsg{err}
+		}
+		return nil
 	}
 }

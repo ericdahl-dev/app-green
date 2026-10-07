@@ -42,7 +42,7 @@ func (m App) View() string {
 			body = append(body, m.mark(i, m.styles.Row(c, l, now)))
 		}
 		if n := len(m.snap.Unlinked); n > 0 {
-			body = append(body, ansi.Truncate(fmt.Sprintf("── Unlinked (%d) ──", n), width, "…"))
+			body = append(body, m.styles.dim.Render(ansi.Truncate(fmt.Sprintf("── Unlinked (%d) ──", n), width, "…")))
 			for i, p := range m.snap.Unlinked {
 				// Exactly width cells, so the cursor's reverse video spans it.
 				line := " " + fit(fmt.Sprintf(" %s#%d  %s", clean(p.Repo), p.Number, clean(p.Title)), width-1)
@@ -102,9 +102,9 @@ func checksTarget(pr model.PR) string {
 	return ChecksPage(pr)
 }
 
-// footer is the key line keys, then the open error, the note and the
+// footer is keyLine, then the open error, the note and the
 // warnings count, if any, cut to width. The key line gives way first.
-func (m App) footer(footerKeys string, width int) string {
+func (m App) footer(keyLine string, width int) string {
 	var extra []string
 	if m.err != "" {
 		extra = append(extra, m.styles.red.Render(clean(m.err)))
@@ -117,10 +117,10 @@ func (m App) footer(footerKeys string, width int) string {
 		extra = append(extra, m.styles.dim.Render(fmt.Sprintf("%d %s", n, plural(n, "warning"))))
 	}
 	if len(extra) == 0 {
-		return ansi.Truncate(footerKeys, width, "…")
+		return ansi.Truncate(keyLine, width, "…")
 	}
 	tail := "  " + strings.Join(extra, "  ")
-	keys := ansi.Truncate(footerKeys, max(width-ansi.StringWidth(tail), 0), "…")
+	keys := ansi.Truncate(keyLine, max(width-ansi.StringWidth(tail), 0), "…")
 	return ansi.Truncate(keys+tail, width, "…")
 }
 
@@ -138,7 +138,7 @@ func (m App) bodyHeight() int {
 	if m.height <= 0 {
 		return -1
 	}
-	return max(m.height-2, 1)
+	return max(m.height-2, 0)
 }
 
 // scroll moves the window of body lines just enough to show the cursor. On

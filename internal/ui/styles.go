@@ -87,10 +87,10 @@ const (
 
 // selected marks line as the cursor's: reverse video, turned back on after
 // every reset the line's own styles end with. Without escape codes the
-// line's first cell (its marker) becomes ">".
+// line's second cell, next to its marker, becomes ">", so the marker stays.
 func (s Styles) selected(line string) string {
 	if s.plain {
-		return ">" + ansi.TruncateLeft(line, 1, "")
+		return ansi.Truncate(line, 1, "") + ">" + ansi.TruncateLeft(line, 2, "")
 	}
 	return sgrReverse + strings.ReplaceAll(line, sgrReset, sgrReset+sgrReverse) + sgrReset
 }

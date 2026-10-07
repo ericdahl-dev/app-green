@@ -95,7 +95,7 @@ func TestAppRows(t *testing.T) {
 	l := ui.NewLayout(snap.Chains, now, 100)
 	want := []string{
 		ui.RenderHeader(snap.Status, now, 100),
-		">" + ansi.TruncateLeft(ui.RenderRow(snap.Chains[0], l, now), 1, ""), // the cursor row
+		"●>" + ansi.TruncateLeft(ui.RenderRow(snap.Chains[0], l, now), 2, ""), // the cursor row, next to its marker
 		ui.RenderRow(snap.Chains[1], l, now),
 		ui.RenderRow(snap.Chains[2], l, now),
 		"── Unlinked (1) ──",
@@ -132,21 +132,33 @@ func key(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+// press sends each key, runs the command it returns (an open, say) and
+// feeds that command's message back, as Bubble Tea would.
 func press(t *testing.T, m ui.App, keys ...string) ui.App {
 	t.Helper()
 	for _, k := range keys {
-		m = update(t, m, key(k))
+		got, cmd := m.Update(key(k))
+		m = got.(ui.App)
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				m = update(t, m, msg)
+			}
+		}
 	}
 	return m
 }
 
-// cursorLine is the line the ASCII cursor (">" in the first cell) is on,
+// isCursor reports whether l carries the ASCII cursor: ">" in the second
+// cell, next to the marker.
+func isCursor(l string) bool { return ansi.Cut(l, 1, 2) == ">" }
+
+// cursorLine is the line the ASCII cursor (">" in the second cell) is on,
 // failing unless exactly one line has it.
 func cursorLine(t *testing.T, m ui.App) string {
 	t.Helper()
 	var found []string
 	for _, l := range viewLines(m) {
-		if strings.HasPrefix(l, ">") {
+		if isCursor(l) {
 			found = append(found, l)
 		}
 	}
@@ -383,6 +395,114 @@ func TestAppOpen(t *testing.T) {
 	m = press(t, m, "k")
 	if foot := viewLines(m)[len(viewLines(m))-1]; strings.Contains(foot, "open failed") {
 		t.Errorf("the next key clears the error: %q", foot)
+	}
+}
+
+func TestAppOpenIsACommand(t *testing.T) {
+	o := &opened{err: errors.New("no browser")}
+	m := ui.NewApp(make(chan resolver.Snapshot), make(chan struct{}, 1), o.open).WithClock(func() time.Time { return now })
+	m = update(t, update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30}), fxSnapshot())
+	for _, mm := range []ui.App{m, press(t, m, "enter")} { // the list, then the detail
+		o.urls = nil
+		got, cmd := mm.Update(key("o"))
+		if len(o.urls) != 0 {
+			t.Fatalf("Update opened %q itself; the open belongs in a command", o.urls)
+		}
+		if cmd == nil {
+			t.Fatal("o returns no command")
+		}
+		msg := cmd()
+		if len(o.urls) != 1 {
+			t.Fatalf("the command opens one page, opened %q", o.urls)
+		}
+		after := update(t, got.(ui.App), msg)
+		if ls := viewLines(after); !strings.Contains(ls[len(ls)-1], "open failed: no browser") {
+			t.Errorf("the command's failure shows in the footer: %q", ls[len(ls)-1])
+		}
+	}
+}
+
+func TestAppOpensOnlyWebPages(t *testing.T) {
+	snap := fxSnapshot()
+	snap.Chains[0].PRs[0].Failing[0].URL = "file:///etc/passwd" // ABC-1's flag target
+	snap.Unlinked[0].URL = "-x"                                 // no ticket to fall back to
+	snap.Chains[2].Ticket.URL = "file:///tmp/x"                 // ABC-3: the ticket is no good either
+	o := &opened{}
+	m := ui.NewApp(make(chan resolver.Snapshot), make(chan struct{}, 1), o.open).WithClock(func() time.Time { return now })
+	m = update(t, update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30}), snap)
+	m = press(t, m, "o", "j", "j", "o", "j", "o")
+	// Detail: a PR whose URL is not a web page falls back to the ticket.
+	snap.Chains[0].PRs[0].URL = "-x"
+	snap.Chains[0].PRs[0].Checks, snap.Chains[0].PRs[0].Failing = model.ChecksPassing, nil
+	m = press(t, update(t, press(t, m, "k", "k", "k"), snap), "enter", "o")
+	want := []string{"https://jira.example.com/browse/ABC-1", "https://jira.example.com/browse/ABC-1"}
+	if strings.Join(o.urls, " ") != strings.Join(want, " ") {
+		t.Errorf("opened\n got %q\nwant %q", o.urls, want)
+	}
+	if foot := viewLines(m)[len(viewLines(m))-1]; foot != "↑/↓ move  o open  r refresh  esc back  q quit" {
+		t.Errorf("no error for a page that was not opened: %q", foot)
+	}
+}
+
+func TestAppTinyHeight(t *testing.T) {
+	snap := fxSnapshot()
+	for _, m := range []ui.App{update(t, newApp(t), snap), press(t, update(t, newApp(t), snap), "enter")} {
+		m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 2})
+		ls := viewLines(m)
+		if len(ls) != 2 || ls[0] != ui.RenderHeader(snap.Status, now, 100) {
+			t.Errorf("2 rows hold the header and the footer only:\n%s", m.View())
+		}
+	}
+}
+
+func TestAppNilOpener(t *testing.T) {
+	m := ui.NewApp(make(chan resolver.Snapshot), make(chan struct{}, 1), nil).WithClock(func() time.Time { return now })
+	m = press(t, update(t, m, fxSnapshot()), "o", "enter", "o") // must not panic
+	if ls := viewLines(m); strings.Contains(ls[len(ls)-1], "failed") {
+		t.Errorf("a nil opener opens nothing, quietly: %q", ls[len(ls)-1])
+	}
+}
+
+func TestAppUnlinkedLabelDim(t *testing.T) {
+	m := update(t, newApp(t).WithStyles(terminal(env{"TERM": "xterm-256color"})), fxSnapshot())
+	label := viewLines(m)[4]
+	if !strings.HasPrefix(label, "\x1b[2m") || ansi.Strip(label) != "── Unlinked (1) ──" {
+		t.Errorf("the Unlinked label is dimmed: %q", label)
+	}
+}
+
+func TestAppSnapshotShorterThanOffset(t *testing.T) {
+	long := fxSnapshot()
+	long.Unlinked = nil
+	for i := range 10 {
+		long.Chains = append(long.Chains, model.Chain{Ticket: model.Ticket{Key: fmt.Sprintf("ABC-%d", 10+i), Title: "More"}})
+	}
+	m := update(t, newApp(t), tea.WindowSizeMsg{Width: 100, Height: 6}) // 4 body lines
+	m = update(t, m, long)
+	m = press(t, m, "j", "j", "j", "j", "j", "j", "j", "j", "j", "j", "j", "j") // scrolled to the bottom
+	short := fxSnapshot()
+	short.Chains, short.Unlinked = short.Chains[:2], nil
+	m = update(t, m, short)
+	ls := viewLines(m)
+	if len(ls) != 4 || !strings.Contains(ls[1], "ABC-1") || !strings.Contains(ls[2], "ABC-2") {
+		t.Errorf("a shorter snapshot scrolls back to show its rows:\n%s", m.View())
+	}
+	if got := cursorLine(t, m); !strings.Contains(got, "ABC-2") {
+		t.Errorf("the cursor clamps to the last row: %q", got)
+	}
+}
+
+func TestAppCleansUnlinkedTitle(t *testing.T) {
+	snap := fxSnapshot()
+	snap.Unlinked[0].Title = "Bump\x1b]52;c;aGk=\x07 deps\nnow"
+	snap.Unlinked[0].Repo = "acme/\x1b[31mapp"
+	m := update(t, newApp(t), snap)
+	v := m.View()
+	if strings.ContainsAny(v, "\x1b\x07") || len(viewLines(m)) != 7 {
+		t.Errorf("the unlinked line is cleaned and stays one line: %q", v)
+	}
+	if !strings.Contains(v, "  acme/app#9  Bump deps now") {
+		t.Errorf("cleaned text shows:\n%s", v)
 	}
 }
 
