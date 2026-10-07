@@ -158,6 +158,7 @@ type fakeHost struct {
 	prErr        error
 	prErrRepo    map[string]error
 	prCalls      int
+	prRepos      []string
 	base         map[string][]model.PR // BasePRs result by repo
 	baseInputs   map[string][]model.PR
 	compare      func(repo, base, head string) (model.Inclusion, error)
@@ -168,6 +169,7 @@ func (f *fakeHost) RecentPRs(_ context.Context, owner, name, _ string, _ time.Ti
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prCalls++
+	f.prRepos = append(f.prRepos, owner+"/"+name)
 	if f.prErr != nil {
 		return nil, nil, f.prErr
 	}

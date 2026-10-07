@@ -52,12 +52,15 @@ type Adapters struct {
 
 // AdapterStatus is how one source fared, for the header.
 type AdapterStatus struct {
-	Name      string    // "jira", "github", "aws <account>"
-	OK        bool      // the last attempt succeeded
-	At        time.Time // last success; zero if none yet
-	Err       string    // the last attempt's error, short
-	SSO       bool      // the error is an expired AWS SSO session
-	Throttled bool      // rate limited: the source is skipped until RetryAt
+	Name string    // "jira", "github", "aws <account>"
+	OK   bool      // the last attempt succeeded
+	At   time.Time // last success; zero if none yet
+	Err  string    // the last attempt's error, short
+	SSO  bool      // the error is an expired AWS SSO session
+	// Auth: Jira or GitHub rejected the token (401). The source is not
+	// called again until a refresh, which retries it once, or a restart.
+	Auth      bool
+	Throttled bool // rate limited: the source is skipped until RetryAt
 	RetryAt   time.Time
 }
 
@@ -77,8 +80,9 @@ type Snapshot struct {
 // prSince is how far back RecentPRs looks.
 const prSince = 30 * 24 * time.Hour
 
-// AWSThrottleBackoff is how long an AWS account is skipped after AWS
-// throttles it; AWS errors carry no Retry-After.
+// AWSThrottleBackoff is the least time an AWS account is skipped after AWS
+// throttles it (a longer poll interval wins); AWS errors carry no
+// Retry-After.
 const AWSThrottleBackoff = time.Minute
 
 // maxErr caps AdapterStatus.Err, in runes.
@@ -160,7 +164,8 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 // Run polls now, then every poll interval, and on each receive from
 // refresh, sending each Snapshot to out, until ctx is canceled. Polls run
 // one at a time: a refresh that arrives during a poll starts the next one
-// as soon as it ends, and the interval restarts after every poll. Send on
+// as soon as it ends, and the interval restarts after every poll. A refresh
+// also retries, once, a source stopped by a rejected token. Send on
 // refresh without blocking (a buffer of 1 coalesces repeated presses).
 func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan struct{}) {
 	timer := time.NewTimer(r.interval)
@@ -179,6 +184,7 @@ func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan 
 		select {
 		case <-timer.C:
 		case <-refresh:
+			r.clearAuth()
 		case <-ctx.Done():
 			return
 		}
@@ -240,7 +246,8 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 		return true
 	}
 	jiraRan := run("jira", func() { jr = r.fetchJira(ctx) })
-	githubRan := run("github", func() { gr = r.fetchGitHub(ctx, now) })
+	watched := r.watchedRepos(known)
+	githubRan := run("github", func() { gr = r.fetchGitHub(ctx, watched, now) })
 	acctRan := make([]bool, len(accts))
 	for i, a := range accts {
 		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, known) })
@@ -264,8 +271,9 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 			r.tickets, r.ticketWarn = jr.tickets, jr.warn
 		}
 		// Extra tickets need GitHub's PRs, so they come after the fetches.
-		// A rate-limited Jira is not asked again this poll.
-		if retryAfter(err) == 0 {
+		// A rate-limited Jira, or one that rejected the token, is not asked
+		// again this poll.
+		if r.retryAfter(err) == 0 && !isAuth(err) {
 			if xerr := r.fetchExtraTickets(ctx); err == nil {
 				err = xerr
 			}
@@ -334,19 +342,32 @@ func (r *Resolver) fetchExtraTickets(ctx context.Context) error {
 	return nil
 }
 
+// watchedRepos are the config's watched repos plus every repo a pipeline's
+// sources name, so an env without config repos still has its PRs fetched.
+// It reads the sources known when the poll starts: a repo first discovered
+// in a poll is fetched from the next one.
+func (r *Resolver) watchedRepos(sources map[config.PipelineKey]map[string]string) []string {
+	all := r.cfg.WatchedRepos()
+	for _, src := range sources {
+		all = append(all, aws.Repos(src)...)
+	}
+	slices.Sort(all)
+	return slices.Compact(all)
+}
+
 // fetchGitHub fetches my recent PRs and their base-branch PRs per watched
 // repo. A repo that fails keeps its previous data and the rest go on, except
 // that a rate limit or a bad token stops the loop: every later call would
 // fail the same way.
-func (r *Resolver) fetchGitHub(ctx context.Context, now time.Time) githubResult {
+func (r *Resolver) fetchGitHub(ctx context.Context, repos []string, now time.Time) githubResult {
 	res := githubResult{repos: map[string]repoData{}}
-	for _, full := range r.cfg.WatchedRepos() {
+	for _, full := range repos {
 		d, err := r.fetchRepo(ctx, full, now)
 		if err != nil {
 			if res.err == nil {
 				res.err = fmt.Errorf("%s: %w", full, err)
 			}
-			if retryAfter(err) > 0 || github.IsAuth(err) {
+			if r.retryAfter(err) > 0 || isAuth(err) {
 				break
 			}
 			continue
@@ -442,21 +463,38 @@ func (r *Resolver) record(name string, err error, now time.Time) {
 	r.log.Warn("source failed", "source", name, "err", err)
 	*s = AdapterStatus{Name: name, At: s.At, Err: short(err.Error()),
 		SSO: strings.HasPrefix(name, "aws ") && aws.IsSSOExpired(err)}
-	if d := retryAfter(err); d > 0 {
+	if !strings.HasPrefix(name, "aws ") && isAuth(err) {
+		s.Auth, s.Err = true, "token rejected"
+	}
+	if d := r.retryAfter(err); d > 0 {
 		s.Throttled, s.RetryAt = true, now.Add(d)
 	}
 }
 
-// backingOff reports whether a throttled source is still waiting out its
-// RetryAt.
+// isAuth reports whether err is a Jira or GitHub 401: the token is bad.
+func isAuth(err error) bool { return jira.IsAuth(err) || github.IsAuth(err) }
+
+// backingOff reports whether a source is stopped: its token was rejected
+// (until a refresh), or it is throttled and RetryAt has not come.
 func (r *Resolver) backingOff(name string, now time.Time) bool {
 	s := r.status[name]
-	return s.Throttled && now.Before(s.RetryAt)
+	return s.Auth || s.Throttled && now.Before(s.RetryAt)
+}
+
+// clearAuth lets every source stopped by a rejected token try once more on
+// the next poll.
+func (r *Resolver) clearAuth() {
+	r.pollMu.Lock()
+	defer r.pollMu.Unlock()
+	for _, s := range r.status {
+		s.Auth = false
+	}
 }
 
 // retryAfter is how long err asks the source to back off: Retry-After from
-// a Jira or GitHub rate limit, AWSThrottleBackoff for AWS throttling, else 0.
-func retryAfter(err error) time.Duration {
+// a Jira or GitHub rate limit, the longer of AWSThrottleBackoff and the poll
+// interval for AWS throttling (so at least one poll is skipped), else 0.
+func (r *Resolver) retryAfter(err error) time.Duration {
 	var je *jira.APIError
 	if errors.As(err, &je) && je.RetryAfter > 0 {
 		return je.RetryAfter
@@ -466,7 +504,7 @@ func retryAfter(err error) time.Duration {
 		return ge.RetryAfter
 	}
 	if aws.IsThrottled(err) {
-		return AWSThrottleBackoff
+		return max(AWSThrottleBackoff, r.cfg.PollInterval())
 	}
 	return 0
 }
@@ -491,7 +529,7 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		}
 	}
 	var prs, bases []model.PR
-	for _, repo := range r.cfg.WatchedRepos() {
+	for _, repo := range r.watchedRepos(r.sources) {
 		d := r.repos[repo]
 		prs = append(prs, d.prs...)
 		bases = append(bases, d.context...)
@@ -513,17 +551,29 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	}
 
 	chains, unlinked := link.Link(tickets, prs, bases, r.cfg.Jira.Projects)
+	// A rate-limited GitHub is not asked for compares; misses are Unknown.
+	// link calls cmp from this goroutine only, so stop needs no lock.
+	stop := r.backingOff("github", now)
 	cmp := func(repo, base, head string) model.Inclusion {
 		if inc, ok := r.cache.get(repo, base, head); ok {
 			return inc
 		}
-		if ctx.Err() != nil {
+		if stop || ctx.Err() != nil {
 			return model.InclusionUnknown
 		}
 		inc, err := r.ad.Code.Compare(ctx, repo, base, head)
 		if err != nil {
 			warn.add(fmt.Sprintf("compare %s %s...%s: %v", repo, base, head, err))
 			inc = model.InclusionUnknown
+			if d := r.retryAfter(err); d > 0 {
+				// Back off GitHub as a whole, from the rest of this poll's
+				// compares to the PR fetches until RetryAt.
+				stop = true
+				r.log.Warn("source failed", "source", "github", "err", err)
+				st := r.status["github"]
+				st.OK, st.Err = false, short(err.Error())
+				st.Throttled, st.RetryAt = true, now.Add(d)
+			}
 		}
 		r.cache.put(repo, base, head, inc)
 		return inc
