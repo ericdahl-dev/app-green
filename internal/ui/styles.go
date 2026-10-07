@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // Styles holds every style the screens use, bound to one renderer, so a test
@@ -18,6 +19,9 @@ type Styles struct {
 	green  lipgloss.Style
 	dim    lipgloss.Style
 	bold   lipgloss.Style
+	// plain: the renderer prints no escape codes (no color terminal, or
+	// NO_COLOR), so the cursor cannot be reverse video.
+	plain bool
 }
 
 // NewStyles builds the styles on r. The renderer decides the color profile;
@@ -29,6 +33,7 @@ func NewStyles(r *lipgloss.Renderer) Styles {
 		green:  r.NewStyle().Foreground(lipgloss.Color("2")),
 		dim:    r.NewStyle().Faint(true),
 		bold:   r.NewStyle().Bold(true),
+		plain:  r.ColorProfile() == termenv.Ascii,
 	}
 }
 
@@ -72,4 +77,20 @@ func fit(s string, w int) string {
 	}
 	s = ansi.Truncate(s, w, "…")
 	return s + strings.Repeat(" ", w-ansi.StringWidth(s))
+}
+
+// SGR codes for the cursor. Every profile but ASCII supports reverse video.
+const (
+	sgrReverse = "\x1b[7m"
+	sgrReset   = "\x1b[0m"
+)
+
+// selected marks line as the cursor's: reverse video, turned back on after
+// every reset the line's own styles end with. Without escape codes the
+// line's first cell (its marker) becomes ">".
+func (s Styles) selected(line string) string {
+	if s.plain {
+		return ">" + ansi.TruncateLeft(line, 1, "")
+	}
+	return sgrReverse + strings.ReplaceAll(line, sgrReset, sgrReset+sgrReverse) + sgrReset
 }

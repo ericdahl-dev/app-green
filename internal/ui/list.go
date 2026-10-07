@@ -1,0 +1,155 @@
+package ui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/ericdahl-dev/app-green/internal/model"
+	"github.com/ericdahl-dev/app-green/internal/resolver"
+)
+
+// defaultWidth is the list width before the first WindowSizeMsg.
+const defaultWidth = 80
+
+// footerKeys is the key line at the bottom of the list.
+const footerKeys = "↑/↓ move  enter details  f re-run  a/x approve/reject  t status  o open  r refresh  q quit"
+
+// View is the header, the rows (chains, then the Unlinked group), and the
+// footer. When the body is taller than the screen it scrolls to keep the
+// cursor in view; the header and footer stay put.
+func (m App) View() string {
+	width := m.width
+	if width <= 0 {
+		width = defaultWidth
+	}
+	now := m.now()
+	var status []resolver.AdapterStatus
+	var body []string
+	switch {
+	case m.snap == nil:
+		body = append(body, "loading…")
+	case len(m.snap.Chains) == 0 && len(m.snap.Unlinked) == 0:
+		status = m.snap.Status
+		body = append(body, "nothing in flight")
+	default:
+		status = m.snap.Status
+		l := NewLayout(m.snap.Chains, now, width)
+		for i, c := range m.snap.Chains {
+			body = append(body, m.mark(i, m.styles.Row(c, l, now)))
+		}
+		if n := len(m.snap.Unlinked); n > 0 {
+			body = append(body, ansi.Truncate(fmt.Sprintf("── Unlinked (%d) ──", n), width, "…"))
+			for i, p := range m.snap.Unlinked {
+				// Exactly width cells, so the cursor's reverse video spans it.
+				line := " " + fit(fmt.Sprintf(" %s#%d  %s", clean(p.Repo), p.Number, clean(p.Title)), width-1)
+				body = append(body, m.mark(len(m.snap.Chains)+i, line))
+			}
+		}
+	}
+	if budget := m.bodyHeight(); budget >= 0 && len(body) > budget {
+		body = body[m.offset:min(m.offset+budget, len(body))]
+	}
+	lines := append([]string{m.styles.Header(status, now, width)}, body...)
+	return strings.Join(append(lines, m.footer(width)), "\n")
+}
+
+// mark is line, selected when item i is under the cursor.
+func (m App) mark(i int, line string) string {
+	if i == m.cursor {
+		return m.styles.selected(line)
+	}
+	return line
+}
+
+// OpenTarget is the page o opens for c's row. When the row offers o, it is
+// what Flags[0] points at: the pipeline console (pipelineURL) for an Env, a
+// failing check's own page (else the PR's checks tab) for a failed check, or
+// the PR. Otherwise, or when that page is unknown, it is the ticket. It is
+// "" only when the ticket's URL is unknown too.
+func OpenTarget(c model.Chain, pipelineURL func(model.Env) string) string {
+	if RowAction(c) != ActionOpen {
+		return c.Ticket.URL
+	}
+	f := c.Flags[0]
+	var u string
+	switch {
+	case f.Slot != nil:
+		u = pipelineURL(f.Slot.Env)
+	case f.PR != nil && f.Kind == model.FlagCheckFailed:
+		u = ChecksPage(*f.PR)
+		for _, ch := range f.PR.Failing {
+			if ch.URL != "" {
+				u = ch.URL
+				break
+			}
+		}
+	case f.PR != nil:
+		u = f.PR.URL
+	}
+	if u == "" {
+		return c.Ticket.URL
+	}
+	return u
+}
+
+// footer is the key line, then the open error and the warnings count, if
+// any, cut to width. The
+// key line gives way first.
+func (m App) footer(width int) string {
+	var extra []string
+	if m.err != "" {
+		extra = append(extra, m.styles.red.Render(clean(m.err)))
+	}
+	if m.snap != nil && len(m.snap.Warnings) > 0 {
+		n := len(m.snap.Warnings)
+		extra = append(extra, m.styles.dim.Render(fmt.Sprintf("%d %s", n, plural(n, "warning"))))
+	}
+	if len(extra) == 0 {
+		return ansi.Truncate(footerKeys, width, "…")
+	}
+	tail := "  " + strings.Join(extra, "  ")
+	keys := ansi.Truncate(footerKeys, max(width-ansi.StringWidth(tail), 0), "…")
+	return ansi.Truncate(keys+tail, width, "…")
+}
+
+// plural is word, with an s unless n is 1.
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// bodyHeight is how many body lines fit between the header and the footer,
+// -1 when the height is not known yet (everything is shown).
+func (m App) bodyHeight() int {
+	if m.height <= 0 {
+		return -1
+	}
+	return max(m.height-2, 1)
+}
+
+// scroll moves the window of body lines just enough to show the cursor.
+func (m App) scroll() App {
+	budget := m.bodyHeight()
+	if budget < 0 || m.snap == nil {
+		m.offset = 0
+		return m
+	}
+	lines, line := len(m.snap.Chains), m.cursor
+	if n := len(m.snap.Unlinked); n > 0 {
+		lines += 1 + n
+		if m.cursor >= len(m.snap.Chains) {
+			line++ // past the Unlinked header
+		}
+	}
+	if line < m.offset {
+		m.offset = line
+	}
+	if line >= m.offset+budget {
+		m.offset = line - budget + 1
+	}
+	m.offset = min(max(m.offset, 0), max(lines-budget, 0))
+	return m
+}
