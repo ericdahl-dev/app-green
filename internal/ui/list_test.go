@@ -294,9 +294,12 @@ func TestOpenTarget(t *testing.T) {
 		{"failing check without a URL opens the checks tab",
 			[]model.Flag{{Kind: model.FlagCheckFailed, PR: pr("https://github.com/acme/app/pull/3", model.Check{Name: "lint"})}},
 			"https://github.com/acme/app/pull/3/checks"},
-		{"re-runnable check offers f, so o opens the ticket",
+		{"re-runnable check (f) opens the checks tab",
 			[]model.Flag{{Kind: model.FlagCheckFailed, PR: pr("https://github.com/acme/app/pull/3", model.Check{Name: "rspec", RunID: 7})}},
-			ticketURL},
+			"https://github.com/acme/app/pull/3/checks"},
+		{"re-runnable check (f) with a URL opens it",
+			[]model.Flag{{Kind: model.FlagCheckFailed, PR: pr("https://github.com/acme/app/pull/3", model.Check{Name: "rspec", RunID: 7, URL: "https://ci.example.com/rspec"})}},
+			"https://ci.example.com/rspec"},
 		{"PR flag opens the PR",
 			[]model.Flag{{Kind: model.FlagReadyToMerge, PR: pr("https://github.com/acme/app/pull/3")}},
 			"https://github.com/acme/app/pull/3"},
@@ -309,15 +312,21 @@ func TestOpenTarget(t *testing.T) {
 		{"approval the profile cannot make opens the pipeline",
 			[]model.Flag{{Kind: model.FlagAwaitingApproval, Slot: slot(true, "tok")}},
 			"pipeline:prod-acct/app-pipeline/Production"},
-		{"approval offers a/x, so o opens the ticket",
+		{"approval (a/x) opens the pipeline",
 			[]model.Flag{{Kind: model.FlagAwaitingApproval, Slot: slot(false, "tok")}},
+			"pipeline:prod-acct/app-pipeline/Production"},
+		{"status mismatch (t) opens the ticket",
+			[]model.Flag{{Kind: model.FlagStatusMismatch, Reason: "Jira still In Progress"}},
 			ticketURL},
-		{"two pipelines to open: the ticket",
+		{"repo no env deploys has no target: the ticket",
+			[]model.Flag{{Kind: model.FlagDeployUnknown}},
+			ticketURL},
+		{"two pipelines: the first flag's",
 			[]model.Flag{
 				{Kind: model.FlagPipelineFailed, Slot: &model.EnvSlot{Env: env}},
 				{Kind: model.FlagUnhealthy, Slot: &model.EnvSlot{Env: other}},
 			},
-			ticketURL},
+			"pipeline:prod-acct/app-pipeline/Production"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -340,6 +349,13 @@ func (o *opened) open(u string) error { o.urls = append(o.urls, u); return o.err
 func TestAppOpen(t *testing.T) {
 	snap := fxSnapshot()
 	snap.Chains[2].Ticket.URL = "" // ABC-3 has nowhere to go
+	// ABC-2's approval can be made here, so its key is a/x; o still opens
+	// the pipeline.
+	snap.Chains[1].Slots[0].Env.ReadOnly = false
+	snap.Chains[1].Slots[0].Deploy = &model.Deploy{Status: model.DeployAwaitingApproval, ApprovalToken: "tok"}
+	if a := ui.RowAction(snap.Chains[1]); a != ui.ActionApprove {
+		t.Fatalf("ABC-2 offers %v, want a/x", a)
+	}
 	o := &opened{}
 	m := ui.NewApp(make(chan resolver.Snapshot), make(chan struct{}, 1), o.open).WithClock(func() time.Time { return now })
 	m = update(t, update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30}), snap)
@@ -347,7 +363,7 @@ func TestAppOpen(t *testing.T) {
 	m = press(t, m, "o", "j", "o", "j", "o", "j", "o")
 	want := []string{
 		"https://ci.example.com/lint/1",                   // ABC-1: the failing check's page
-		resolver.PipelineURL(snap.Chains[1].Slots[0].Env), // ABC-2: approval the profile cannot make
+		resolver.PipelineURL(snap.Chains[1].Slots[0].Env), // ABC-2: the approval's pipeline
 		// ABC-3: no URL, nothing opened
 		"https://github.com/acme/app/pull/9", // the unlinked PR
 	}

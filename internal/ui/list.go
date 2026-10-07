@@ -62,13 +62,14 @@ func (m App) mark(i int, line string) string {
 	return line
 }
 
-// OpenTarget is the page o opens for c's row. When the row offers o, it is
-// what Flags[0] points at: the pipeline console (pipelineURL) for an Env, a
-// failing check's own page (else the PR's checks tab) for a failed check, or
-// the PR. Otherwise, or when that page is unknown, it is the ticket. It is
-// "" only when the ticket's URL is unknown too.
+// OpenTarget is the page o opens for c's row: what Flags[0] is about,
+// whatever the row's main key. That is the pipeline console (pipelineURL)
+// for an Env, a failing check's own page (else the PR's checks tab) for a
+// failed check, or the PR. With no flag, a flag with no target, or an
+// unknown page, it is the ticket. It is "" only when the ticket's URL is
+// unknown too.
 func OpenTarget(c model.Chain, pipelineURL func(model.Env) string) string {
-	if RowAction(c) != ActionOpen {
+	if len(c.Flags) == 0 {
 		return c.Ticket.URL
 	}
 	f := c.Flags[0]
