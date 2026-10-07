@@ -293,7 +293,7 @@ func ago(at, now time.Time) string {
 // slotText is where the work stands in s's env: "✓ deployed 1d ago
 // (aaaa111)  ECS 2/2", "‖ awaiting approval since 1d", "in progress since
 // 2m (cccc333)", "✗ failed 3h ago (bbbb222)", "✗ rejected or expired …",
-// "✗ rolled back …", "deploy unknown" or "not yet". Unknown times and SHAs
+// "✗ rolled back 2d ago (now dddd444)", "deploy unknown" or "not yet". Unknown times and SHAs
 // are left out.
 func slotText(s model.EnvSlot, now time.Time) string {
 	switch s.State {
@@ -320,7 +320,13 @@ func slotText(s model.EnvSlot, now time.Time) string {
 		}
 		return "✗ failed" + ago(s.At, now) + sha(s.SHA)
 	case model.SlotRolledBack:
-		return "✗ rolled back" + ago(s.At, now) + sha(s.SHA)
+		// Here SHA is the commit that replaced the chain's (link sets it from
+		// the newer deploy), so it is marked "now".
+		t := "✗ rolled back" + ago(s.At, now)
+		if h := shortSHA(s.SHA); h != "" {
+			t += " (now " + h + ")"
+		}
+		return t
 	case model.SlotUnknown:
 		return "deploy unknown"
 	}
@@ -329,9 +335,11 @@ func slotText(s model.EnvSlot, now time.Time) string {
 
 // sha is " (aaaa111)", the commit cut to 7 cells, or "" when unknown.
 func sha(s string) string {
-	s = clean(s)
-	if s == "" {
-		return ""
+	if h := shortSHA(s); h != "" {
+		return " (" + h + ")"
 	}
-	return " (" + ansi.Truncate(s, 7, "") + ")"
+	return ""
 }
+
+// shortSHA is the commit, cleaned and cut to 7 cells.
+func shortSHA(s string) string { return ansi.Truncate(clean(s), 7, "") }

@@ -97,7 +97,7 @@ func TestDetailEnvStates(t *testing.T) {
 		{"rejected", model.EnvSlot{State: model.SlotFailed, SHA: "bbbb2222", At: ago(3 * time.Hour),
 			Deploy: &model.Deploy{Status: model.DeployRejected}}, "✗ rejected or expired 3h ago (bbbb222)"},
 		{"rolled back", model.EnvSlot{State: model.SlotRolledBack, SHA: "dddd4444", At: ago(48 * time.Hour)},
-			"✗ rolled back 2d ago (dddd444)"},
+			"✗ rolled back 2d ago (now dddd444)"}, // SHA is the commit that replaced it
 		{"unknown", model.EnvSlot{State: model.SlotUnknown}, "deploy unknown"},
 		{"not yet", model.EnvSlot{State: model.SlotNotYet}, "not yet"},
 	}
