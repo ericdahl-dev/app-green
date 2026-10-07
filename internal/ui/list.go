@@ -95,7 +95,7 @@ func OpenTarget(c model.Chain, pipelineURL func(model.Env) string) string {
 // own page, else ChecksPage(pr).
 func checksTarget(pr model.PR) string {
 	for _, ch := range pr.Failing {
-		if ch.URL != "" {
+		if _, ok := webPage(ch.URL); ok {
 			return ch.URL
 		}
 	}

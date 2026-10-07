@@ -182,12 +182,16 @@ func (m App) target() string {
 	return ""
 }
 
-// webPage reports whether u is an absolute http or https URL with a host.
-// Anything else (a file: URL, or "-x" that a browser launcher could take for
-// a flag) is never opened: the URLs come from Jira, GitHub and AWS.
-func webPage(u string) bool {
+// webPage parses u and reports whether it is an absolute http or https URL
+// with a host. Anything else (a file: URL, or "-x" that a browser launcher
+// could take for a flag) is never opened: the URLs come from Jira, GitHub and
+// AWS.
+func webPage(u string) (*url.URL, bool) {
 	p, err := url.Parse(u)
-	return err == nil && (p.Scheme == "http" || p.Scheme == "https") && p.Host != ""
+	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+		return nil, false
+	}
+	return p, true
 }
 
 // cursorTicketURL is the ticket URL of the chain under the cursor, "" on an
@@ -217,8 +221,8 @@ type openFailedMsg struct{ err error }
 func (m App) open(urls ...string) tea.Cmd {
 	var u string
 	for _, c := range urls {
-		if webPage(c) {
-			u = c
+		if p, ok := webPage(c); ok {
+			u = p.String() // what was checked is what is opened
 			break
 		}
 	}

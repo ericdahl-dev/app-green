@@ -431,3 +431,24 @@ func TestDetailPollKeepsScrollPosition(t *testing.T) {
 		t.Errorf("a poll moves the scrolled window\n got %q\nwant %q", got, before)
 	}
 }
+
+func TestDetailOpenFailingCheckWithoutWebPage(t *testing.T) {
+	// A check whose URL is not a web page falls to the checks tab, not the ticket.
+	o := &opened{}
+	snap := fxDetailSnapshot()
+	snap.Chains[1].PRs[1].Failing[1].URL = "file:///etc/passwd"
+	press(t, detailWith(t, o, snap), "j", "o")
+	if want := "https://github.com/acme/app/pull/331/checks"; len(o.urls) != 1 || o.urls[0] != want {
+		t.Errorf("opened %q, want %q", o.urls, want)
+	}
+}
+
+func TestOpenPassesTheParsedURL(t *testing.T) {
+	o := &opened{}
+	snap := fxDetailSnapshot()
+	snap.Chains[1].PRs[0].URL = "https://github.com/acme/app/pull/330 x"
+	press(t, detailWith(t, o, snap), "o")
+	if want := "https://github.com/acme/app/pull/330%20x"; len(o.urls) != 1 || o.urls[0] != want {
+		t.Errorf("opened %q, want the URL as parsed and re-encoded %q", o.urls, want)
+	}
+}

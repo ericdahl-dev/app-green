@@ -435,7 +435,8 @@ func TestAppOpensOnlyWebPages(t *testing.T) {
 	snap.Chains[0].PRs[0].URL = "-x"
 	snap.Chains[0].PRs[0].Checks, snap.Chains[0].PRs[0].Failing = model.ChecksPassing, nil
 	m = press(t, update(t, press(t, m, "k", "k", "k"), snap), "enter", "o")
-	want := []string{"https://jira.example.com/browse/ABC-1", "https://jira.example.com/browse/ABC-1"}
+	// A failing check whose URL is not a web page falls to the PR's checks tab.
+	want := []string{"https://github.com/acme/app/pull/3/checks", "https://jira.example.com/browse/ABC-1"}
 	if strings.Join(o.urls, " ") != strings.Join(want, " ") {
 		t.Errorf("opened\n got %q\nwant %q", o.urls, want)
 	}
