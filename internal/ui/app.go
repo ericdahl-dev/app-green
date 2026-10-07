@@ -72,14 +72,19 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m App) update(msg tea.Msg) (App, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		visible := m.detail != "" && m.selectionVisible()
 		m.width, m.height = msg.Width, msg.Height
+		if m.detail != "" {
+			m = m.followSelection(visible)
+		}
 	case resolver.Snapshot:
 		id := m.itemID(m.cursor)
 		before, _ := m.chain(m.detail)
+		visible := m.detail != "" && m.selectionVisible()
 		m.snap = &msg
 		m.cursor = m.find(id)
 		if m.detail != "" {
-			m = m.refreshDetail(before)
+			m = m.refreshDetail(before, visible)
 		}
 		return m, waitForSnapshot(m.snaps)
 	case openFailedMsg:

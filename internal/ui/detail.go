@@ -70,8 +70,9 @@ func (m App) detailKey(msg tea.KeyMsg) (App, tea.Cmd) {
 // with the selection on the same PR or env as in before, the ticket's chain
 // in the last snapshot; when that item is gone the selection stays at its
 // index, clamped. When the ticket is gone it returns to the list with a
-// note saying so.
-func (m App) refreshDetail(before model.Chain) App {
+// note saying so. The window follows the selection only when it was on screen
+// (visible) and no longer is; otherwise a poll leaves the scroll alone.
+func (m App) refreshDetail(before model.Chain, visible bool) App {
 	c, ok := m.chain(m.detail)
 	if !ok {
 		m.note = m.detail + " is no longer in the list"
@@ -84,12 +85,22 @@ func (m App) refreshDetail(before model.Chain) App {
 		for i, it := range items {
 			if it.id() == id {
 				m.dsel = i
-				return m.showSelection()
+				return m.followSelection(visible)
 			}
 		}
 	}
 	m.dsel = max(min(m.dsel, len(items)-1), 0)
-	return m.showSelection()
+	return m.followSelection(visible)
+}
+
+// followSelection scrolls to the selection only if it was on screen
+// (visible) before the change and no longer is. A selection the user
+// scrolled away from stays where it is.
+func (m App) followSelection(visible bool) App {
+	if visible && !m.selectionVisible() {
+		return m.showSelection()
+	}
+	return m
 }
 
 // id names the item so the selection can find it in the next snapshot:

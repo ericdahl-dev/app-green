@@ -402,3 +402,32 @@ func TestDetailOpenHiddenSelection(t *testing.T) {
 		t.Errorf("opened\n got %q\nwant %q", o.urls, want)
 	}
 }
+
+func TestDetailResizeKeepsSelectionOnScreen(t *testing.T) {
+	m := update(t, inDetail(t), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = press(t, m, "j", "j", "j", "j", "j") // the last item
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 8})
+	if got := cursorLine(t, m); !strings.Contains(got, "prod-acct   Production") {
+		t.Errorf("after the window shrinks the selection is still on screen: %q", got)
+	}
+}
+
+func TestDetailPollKeepsScrollPosition(t *testing.T) {
+	snap := fxDetailSnapshot()
+	c := &snap.Chains[1]
+	for range 4 {
+		c.Flags = append(c.Flags, model.Flag{Level: model.Yellow, Kind: model.FlagStaleReview, Reason: "more"})
+	}
+	m := update(t, press(t, update(t, newApp(t), snap), "j", "enter"), tea.WindowSizeMsg{Width: 100, Height: 8})
+	m = press(t, m, "j", "j", "j", "j", "j", "j", "j", "j", "j", "j", "j", "j", "j") // last item, then scroll past it
+	for _, l := range viewLines(m) {
+		if isCursor(l) {
+			t.Fatalf("the selection should be scrolled out:\n%s", m.View())
+		}
+	}
+	before := trimmed(m)[1]
+	m = update(t, m, snap) // a poll with nothing new
+	if got := trimmed(m)[1]; got != before {
+		t.Errorf("a poll moves the scrolled window\n got %q\nwant %q", got, before)
+	}
+}
