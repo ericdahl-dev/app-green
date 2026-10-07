@@ -29,9 +29,9 @@ func testPipeline() *codepipeline.GetPipelineOutput {
 		Name: awssdk.String("app-pipeline"),
 		Stages: []types.StageDeclaration{
 			{Name: awssdk.String("Source"), Actions: []types.ActionDeclaration{
-				sourceAction("AppCode", "Acme/App"),
-				sourceAction("InfraCode", "acme/infra"),
-				sourceAction("ReportsCode", "acme/reports"),
+				sourceAction("AppSource", "Acme/App"),
+				sourceAction("InfraSource", "acme/infra"),
+				sourceAction("ReportsSource", "acme/reports"),
 			}},
 			{Name: awssdk.String("Test"), Actions: []types.ActionDeclaration{{
 				Name:          awssdk.String("Deploy"),
@@ -48,7 +48,7 @@ func TestSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"acme/app": "AppCode", "acme/infra": "InfraCode", "acme/reports": "ReportsCode"}
+	want := map[string]string{"acme/app": "AppSource", "acme/infra": "InfraSource", "acme/reports": "ReportsSource"}
 	if !maps.Equal(got, want) {
 		t.Errorf("Sources = %v, want %v", got, want)
 	}

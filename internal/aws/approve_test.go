@@ -23,7 +23,7 @@ func TestApprove(t *testing.T) {
 	}
 	for _, tc := range cases {
 		f := &fakePipeline{}
-		err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ManualApprovalOfTestEnvironment", "tok-3", tc.ok, tc.summary)
+		err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ApproveTest", "tok-3", tc.ok, tc.summary)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32,7 +32,7 @@ func TestApprove(t *testing.T) {
 			t.Fatal("PutApprovalResult not called")
 		}
 		if awssdk.ToString(in.PipelineName) != "app-pipeline" || awssdk.ToString(in.StageName) != "Test" ||
-			awssdk.ToString(in.ActionName) != "ManualApprovalOfTestEnvironment" || awssdk.ToString(in.Token) != "tok-3" {
+			awssdk.ToString(in.ActionName) != "ApproveTest" || awssdk.ToString(in.Token) != "tok-3" {
 			t.Errorf("input = %+v", in)
 		}
 		if in.Result == nil || in.Result.Status != tc.wantStatus || awssdk.ToString(in.Result.Summary) != tc.wantSummary {
@@ -43,7 +43,7 @@ func TestApprove(t *testing.T) {
 
 func TestApproveNeedsToken(t *testing.T) {
 	f := &fakePipeline{}
-	if err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ManualApprovalOfTestEnvironment", "", true, ""); err == nil {
+	if err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ApproveTest", "", true, ""); err == nil {
 		t.Error("want an error for an empty token")
 	}
 	if f.approval != nil {
@@ -64,7 +64,7 @@ func TestApproveErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakePipeline{err: tc.err}
-			err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ManualApprovalOfTestEnvironment", "tok-3", true, "")
+			err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ApproveTest", "tok-3", true, "")
 			if !errors.Is(err, tc.want) {
 				t.Errorf("err = %v, want %v", err, tc.want)
 			}

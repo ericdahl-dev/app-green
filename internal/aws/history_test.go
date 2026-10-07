@@ -17,10 +17,10 @@ var t0 = time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 
 func at(min int) *time.Time { t := t0.Add(time.Duration(min) * time.Minute); return &t }
 
-var testSources = map[string]string{"acme/app": "AppCode", "acme/infra": "InfraCode", "acme/reports": "ReportsCode"}
+var testSources = map[string]string{"acme/app": "AppSource", "acme/infra": "InfraSource", "acme/reports": "ReportsSource"}
 
 var (
-	prodSpec = StageSpec{Stage: "Production", DeployAction: "deploy", ApprovalStage: "Test", ApprovalAction: "ManualApprovalOfTestEnvironment"}
+	prodSpec = StageSpec{Stage: "Production", DeployAction: "deploy", ApprovalStage: "Test", ApprovalAction: "ApproveTest"}
 	testSpec = StageSpec{Stage: "Test", DeployAction: "Deploy"}
 )
 
@@ -45,7 +45,7 @@ func actionExec(exec, stage, action string, status types.ActionExecutionStatus, 
 }
 
 func allRevs(sha string) []string {
-	return []string{"AppCode", sha, "InfraCode", sha + "i", "ReportsCode", sha + "r"}
+	return []string{"AppSource", sha, "InfraSource", sha + "i", "ReportsSource", sha + "r"}
 }
 
 func TestHistoryStatuses(t *testing.T) {
@@ -112,9 +112,9 @@ func TestHistoryNewestFirst(t *testing.T) {
 func TestHistoryRevisions(t *testing.T) {
 	f := &fakePipeline{
 		execs: &codepipeline.ListPipelineExecutionsOutput{PipelineExecutionSummaries: []types.PipelineExecutionSummary{
-			// exec2 has no ReportsCode revision, plus a source action no
+			// exec2 has no ReportsSource revision, plus a source action no
 			// configured repo maps to.
-			execSummary("exec2", types.PipelineExecutionStatusSucceeded, "AppCode", "bbb", "InfraCode", "bbbi", "OtherCode", "zzz"),
+			execSummary("exec2", types.PipelineExecutionStatusSucceeded, "AppSource", "bbb", "InfraSource", "bbbi", "OtherCode", "zzz"),
 			execSummary("exec1", types.PipelineExecutionStatusSucceeded, allRevs("aaa")...),
 		}},
 		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
@@ -156,7 +156,7 @@ func TestHistoryKeepsFinishedActionsOfEndedRuns(t *testing.T) {
 			actionExec("exec5", "Test", "Deploy", types.ActionExecutionStatusAbandoned, at(50)),
 			// Superseded while waiting at the approval: its Test deploy
 			// really ran, and the approval it waited at never finished.
-			actionExec("exec4", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusInProgress, at(42)),
+			actionExec("exec4", "Test", "ApproveTest", types.ActionExecutionStatusInProgress, at(42)),
 			actionExec("exec4", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(40)),
 			// A canceled run's finished failure is still a real failure.
 			actionExec("exec3", "Test", "Deploy", types.ActionExecutionStatusFailed, at(30)),
@@ -187,14 +187,14 @@ func approvalFake() *fakePipeline {
 			execSummary("exec1", types.PipelineExecutionStatusFailed, allRevs("aaa")...),
 		}},
 		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
-			actionExec("exec3", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusInProgress, at(36)),
-			actionExec("exec3", "Test", "SmokeTests", types.ActionExecutionStatusSucceeded, at(35)),
+			actionExec("exec3", "Test", "ApproveTest", types.ActionExecutionStatusInProgress, at(36)),
+			actionExec("exec3", "Test", "Smoke", types.ActionExecutionStatusSucceeded, at(35)),
 			actionExec("exec3", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(34)),
 			actionExec("exec2", "Production", "deploy", types.ActionExecutionStatusSucceeded, at(25)),
-			actionExec("exec2", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusSucceeded, at(23)),
+			actionExec("exec2", "Test", "ApproveTest", types.ActionExecutionStatusSucceeded, at(23)),
 			actionExec("exec2", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(20)),
 			actionExec("exec1", "Production", "deploy", types.ActionExecutionStatusFailed, at(15)),
-			actionExec("exec1", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusSucceeded, at(12)),
+			actionExec("exec1", "Test", "ApproveTest", types.ActionExecutionStatusSucceeded, at(12)),
 			actionExec("exec1", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(10)),
 		}}},
 		state: &codepipeline.GetPipelineStateOutput{StageStates: []types.StageState{
@@ -203,8 +203,8 @@ func approvalFake() *fakePipeline {
 				LatestExecution: &types.StageExecution{PipelineExecutionId: awssdk.String("exec3"), Status: types.StageExecutionStatusInProgress},
 				ActionStates: []types.ActionState{
 					{ActionName: awssdk.String("Deploy"), LatestExecution: &types.ActionExecution{Status: types.ActionExecutionStatusSucceeded}},
-					{ActionName: awssdk.String("ManualApprovalOfTestEnvironment"), LatestExecution: &types.ActionExecution{
-						ActionExecutionId: awssdk.String("exec3-ManualApprovalOfTestEnvironment"),
+					{ActionName: awssdk.String("ApproveTest"), LatestExecution: &types.ActionExecution{
+						ActionExecutionId: awssdk.String("exec3-ApproveTest"),
 						Status:            types.ActionExecutionStatusInProgress,
 						Token:             awssdk.String("tok-3"),
 					}},
@@ -326,7 +326,7 @@ func TestHistoryActionPagingIsBounded(t *testing.T) {
 		}},
 		// Always another page.
 		actionPages: []*codepipeline.ListActionExecutionsOutput{{NextToken: awssdk.String("more"), ActionExecutionDetails: []types.ActionExecutionDetail{
-			actionExec("exec1", "Test", "SmokeTests", types.ActionExecutionStatusSucceeded, at(10)),
+			actionExec("exec1", "Test", "Smoke", types.ActionExecutionStatusSucceeded, at(10)),
 		}}},
 	}
 	if _, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec); err != nil {
@@ -398,10 +398,10 @@ func TestHistoryRejectedApproval(t *testing.T) {
 			execSummary("exec2", types.PipelineExecutionStatusSucceeded, allRevs("bbb")...),
 		}},
 		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
-			actionExec("exec3", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusFailed, at(36)),
+			actionExec("exec3", "Test", "ApproveTest", types.ActionExecutionStatusFailed, at(36)),
 			actionExec("exec3", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(34)),
 			actionExec("exec2", "Production", "deploy", types.ActionExecutionStatusSucceeded, at(25)),
-			actionExec("exec2", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusSucceeded, at(23)),
+			actionExec("exec2", "Test", "ApproveTest", types.ActionExecutionStatusSucceeded, at(23)),
 			actionExec("exec2", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(20)),
 		}}},
 	}
@@ -428,7 +428,7 @@ func TestHistoryRetriedApprovalWaitsAgain(t *testing.T) {
 	f := approvalFake()
 	page := f.actionPages[0]
 	// exec3's approval failed once, then the stage was retried.
-	failed := actionExec("exec3", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusFailed, at(33))
+	failed := actionExec("exec3", "Test", "ApproveTest", types.ActionExecutionStatusFailed, at(33))
 	failed.ActionExecutionId = awssdk.String("exec3-approval-1")
 	page.ActionExecutionDetails = append(page.ActionExecutionDetails, failed)
 	got, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, prodSpec)
