@@ -218,7 +218,8 @@ func (m App) detailBody(width int) []string {
 }
 
 // showSelection scrolls the detail just enough to show the selected line,
-// and to the top on the first item so the ticket line shows.
+// and to the top on the first item so the ticket line shows (when the screen
+// has room for both; on a one-line body the selection wins).
 func (m App) showSelection() App {
 	budget := m.bodyHeight()
 	sel := m.selectedLine()
