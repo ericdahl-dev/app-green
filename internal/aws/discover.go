@@ -14,7 +14,9 @@ import (
 
 // Sources returns the repos a pipeline builds from: lowercased "owner/name"
 // → the source action's name. It reads every Source-category action with a
-// FullRepositoryId (CodeStar connections to GitHub).
+// FullRepositoryId (CodeStar connections to GitHub). When two source actions
+// build the same repo (say, two branches), the last one declared wins, so
+// revisions for that repo come from that action only.
 func (c *Client) Sources(ctx context.Context, pipeline string) (map[string]string, error) {
 	out, err := c.cp.GetPipeline(ctx, &codepipeline.GetPipelineInput{Name: awssdk.String(pipeline)})
 	if err != nil {

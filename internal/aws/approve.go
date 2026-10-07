@@ -23,8 +23,12 @@ var ErrApprovalAlreadyDecided = errors.New("aws: approval already decided")
 // decide it (no codepipeline:PutApprovalResult).
 var ErrApprovalNotPermitted = errors.New("aws: profile not permitted to decide approvals")
 
+// maxSummary is PutApprovalResult's limit on the summary, in characters.
+const maxSummary = 512
+
 // Approve approves (ok) or rejects the waiting approval action identified by
-// token. An empty summary gets a default naming app-green.
+// token. An empty summary gets a default naming app-green; a long one is cut
+// to maxSummary.
 func (c *Client) Approve(ctx context.Context, pipeline, stage, action, token string, ok bool, summary string) error {
 	if token == "" {
 		return fmt.Errorf("aws: approve %s/%s/%s: no approval token", pipeline, stage, action)
@@ -38,6 +42,9 @@ func (c *Client) Approve(ctx context.Context, pipeline, stage, action, token str
 		if !ok {
 			summary = "Rejected via app-green"
 		}
+	}
+	if r := []rune(summary); len(r) > maxSummary {
+		summary = string(r[:maxSummary])
 	}
 	_, err := c.cp.PutApprovalResult(ctx, &codepipeline.PutApprovalResultInput{
 		PipelineName: awssdk.String(pipeline),

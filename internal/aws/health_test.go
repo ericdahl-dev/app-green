@@ -88,3 +88,23 @@ func TestHealthError(t *testing.T) {
 		t.Errorf("Health = %+v, %v; want unknown, boom", got, err)
 	}
 }
+
+func TestHealthServiceARNsMatchByName(t *testing.T) {
+	f := &fakeECS{byCluster: map[string]*ecs.DescribeServicesOutput{
+		"c1": {Services: []ecstypes.Service{svc("s1", 2, 2), svc("s2", 1, 1)}},
+	}}
+	got, warns, err := (&Client{ecs: f}).Health(context.Background(), []Service{
+		{Cluster: "c1", Name: "arn:aws:ecs:us-east-1:111111111111:service/c1/s1"},
+		{Cluster: "c1", Name: "s2"},
+		{Cluster: "c1", Name: "s1"}, // the same service again
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (model.Health{Known: true, Desired: 3, Healthy: 3}); got != want || len(warns) > 0 {
+		t.Errorf("Health = %+v %v, want %+v", got, warns, want)
+	}
+	if !slices.Equal(f.inputs[0].Services, []string{"s1", "s2"}) {
+		t.Errorf("services = %v", f.inputs[0].Services)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -331,11 +332,16 @@ func TestHistoryActionPagingIsBounded(t *testing.T) {
 			actionExec("exec1", "Test", "Smoke", types.ActionExecutionStatusSucceeded, at(10)),
 		}}},
 	}
-	if _, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec); err != nil {
+	_, warns, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.actionInputs) != maxActionPages {
-		t.Errorf("ListActionExecutions calls = %d, want %d", len(f.actionInputs), maxActionPages)
+	if len(f.actionInputs) != 10 {
+		t.Errorf("ListActionExecutions calls = %d, want 10", len(f.actionInputs))
+	}
+	want := "aws: app-pipeline: action history truncated at 10 pages; older runs omitted"
+	if !slices.Contains(warns, want) {
+		t.Errorf("warnings = %v, want %q", warns, want)
 	}
 }
 
@@ -463,5 +469,25 @@ func TestHistoryStateFailureIsAWarning(t *testing.T) {
 	}
 	if len(warns) == 0 || !strings.Contains(strings.Join(warns, "\n"), "throttled") {
 		t.Errorf("warnings = %v, want the GetPipelineState failure", warns)
+	}
+}
+
+func TestHistoryWarnsOnSpecThatMatchesNothing(t *testing.T) {
+	f := approvalFake()
+	typo := StageSpec{Stage: "Production", DeployAction: "Deploy", ApprovalStage: "Test", ApprovalAction: "ApproveTst"}
+	got, warns, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, typo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["Production"]) != 0 {
+		t.Errorf("Production = %+v, want empty", got["Production"])
+	}
+	for _, w := range []string{
+		"aws: app-pipeline: spec Production/Deploy matched no actions",
+		"aws: app-pipeline: spec Test/ApproveTst matched no actions",
+	} {
+		if !slices.Contains(warns, w) {
+			t.Errorf("warnings = %v, want %q", warns, w)
+		}
 	}
 }

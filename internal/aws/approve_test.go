@@ -3,7 +3,9 @@ package aws
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codepipeline/types"
@@ -74,5 +76,17 @@ func TestApproveErrors(t *testing.T) {
 	err := (&Client{cp: &fakePipeline{err: boom}}).Approve(context.Background(), "app-pipeline", "Test", "a", "tok", false, "")
 	if !errors.Is(err, boom) || errors.Is(err, ErrApprovalAlreadyDecided) || errors.Is(err, ErrApprovalNotPermitted) {
 		t.Errorf("err = %v, want boom only", err)
+	}
+}
+
+func TestApproveTruncatesSummary(t *testing.T) {
+	f := &fakePipeline{}
+	long := strings.Repeat("é", 600)
+	if err := (&Client{cp: f}).Approve(context.Background(), "app-pipeline", "Test", "ApproveTest", "tok-3", true, long); err != nil {
+		t.Fatal(err)
+	}
+	got := awssdk.ToString(f.approval.Result.Summary)
+	if n := utf8.RuneCountInString(got); n != 512 || !utf8.ValidString(got) {
+		t.Errorf("summary is %d runes (valid %v), want 512", n, utf8.ValidString(got))
 	}
 }

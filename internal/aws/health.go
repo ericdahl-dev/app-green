@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -34,8 +35,9 @@ func (c *Client) Health(ctx context.Context, services []Service) (model.Health, 
 		if _, ok := names[s.Cluster]; !ok {
 			clusters = append(clusters, s.Cluster)
 		}
-		if !slices.Contains(names[s.Cluster], s.Name) {
-			names[s.Cluster] = append(names[s.Cluster], s.Name)
+		name := serviceName(s.Name)
+		if !slices.Contains(names[s.Cluster], name) {
+			names[s.Cluster] = append(names[s.Cluster], name)
 		}
 	}
 
@@ -70,4 +72,13 @@ func (c *Client) Health(ctx context.Context, services []Service) (model.Health, 
 		return model.Health{}, warns, nil
 	}
 	return h, nil, nil
+}
+
+// serviceName reduces a service ARN (".../service/c1/s1") to its name, the
+// form DescribeServices returns in ServiceName; a plain name is unchanged.
+func serviceName(s string) string {
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }

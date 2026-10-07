@@ -34,14 +34,19 @@ const maxExecutions = 50
 // maxActionPages bounds ListActionExecutions paging. With no execution
 // filter it lists every action of every run (about nine per run in a
 // Source → Test → Production pipeline), so 100 per page covers about eleven
-// runs; five pages cover the execution window.
-const maxActionPages = 5
+// runs; ten pages cover the execution window with room to spare.
+const maxActionPages = 10
 
 // History returns each spec's deploys, keyed by StageSpec.Stage, newest
 // first. sources is the repo → source action map from Sources. An execution
 // that has not run the spec's deploy action but waits at its approval action
 // is a DeployAwaitingApproval deploy carrying the approval token. A warning
 // means the history is usable but incomplete.
+//
+// Between the approval succeeding and the gated deploy action starting, the
+// run has neither a waiting approval nor a deploy in that stage, so for that
+// moment (usually seconds) it is absent and the Env shows NotYet for it; the
+// next poll sees the deploy InProgress.
 func (c *Client) History(ctx context.Context, pipeline string, sources map[string]string, specs ...StageSpec) (map[string][]model.Deploy, []string, error) {
 	execList, err := c.cp.ListPipelineExecutions(ctx, &codepipeline.ListPipelineExecutionsInput{
 		PipelineName: awssdk.String(pipeline),
@@ -50,17 +55,21 @@ func (c *Client) History(ctx context.Context, pipeline string, sources map[strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("aws: ListPipelineExecutions %s: %w", pipeline, err)
 	}
-	acts, err := c.actionExecutions(ctx, pipeline, oldestStart(execList.PipelineExecutionSummaries))
+	acts, truncated, err := c.actionExecutions(ctx, pipeline, oldestStart(execList.PipelineExecutionSummaries))
 	if err != nil {
 		return nil, nil, err
 	}
 	execs := executions(execList.PipelineExecutionSummaries, sources)
 
 	var warns []string
+	if truncated {
+		warns = append(warns, fmt.Sprintf("aws: %s: action history truncated at %d pages; older runs omitted", pipeline, maxActionPages))
+	}
 	var state *codepipeline.GetPipelineStateOutput // fetched once, on the first pending approval
 	out := map[string][]model.Deploy{}
 	for _, spec := range specs {
 		deploys, pending := stageDeploys(spec, acts, execs)
+		warns = append(warns, unmatched(pipeline, spec, acts)...)
 		for _, p := range pending {
 			if state == nil {
 				// Only the token comes from here: on failure keep the history
@@ -89,11 +98,35 @@ func (c *Client) History(ctx context.Context, pipeline string, sources map[strin
 	return out, warns, nil
 }
 
-// actionExecutions lists the pipeline's action executions, newest first,
-// paging until AWS has no more, a page reaches actions that started before
-// oldest (the oldest execution in the window; zero means unknown), or
-// maxActionPages.
-func (c *Client) actionExecutions(ctx context.Context, pipeline string, oldest time.Time) ([]types.ActionExecutionDetail, error) {
+// unmatched warns about a spec action that no action in the window has: a
+// misnamed action in config, since across a window of recent runs each
+// action has normally run at least once. Names are case-sensitive. An empty window warns about nothing.
+func unmatched(pipeline string, spec StageSpec, acts []types.ActionExecutionDetail) []string {
+	if len(acts) == 0 {
+		return nil
+	}
+	pairs := [][2]string{{spec.Stage, spec.DeployAction}}
+	if spec.ApprovalAction != "" {
+		pairs = append(pairs, [2]string{spec.ApprovalStage, spec.ApprovalAction})
+	}
+	var warns []string
+	for _, p := range pairs {
+		if !slices.ContainsFunc(acts, func(a types.ActionExecutionDetail) bool {
+			return awssdk.ToString(a.StageName) == p[0] && awssdk.ToString(a.ActionName) == p[1]
+		}) {
+			warns = append(warns, fmt.Sprintf("aws: %s: spec %s/%s matched no actions", pipeline, p[0], p[1]))
+		}
+	}
+	return warns
+}
+
+// actionExecutions lists the pipeline's action executions, paging until AWS
+// has no more, a page reaches actions that started before oldest (the oldest
+// execution in the window; zero means unknown), or maxActionPages. AWS lists
+// them newest first by start time (checked against a real pipeline: no
+// inversions in 100), which is what makes the early stop safe. truncated
+// reports that the page cap ended the listing with more runs in the window.
+func (c *Client) actionExecutions(ctx context.Context, pipeline string, oldest time.Time) (acts []types.ActionExecutionDetail, truncated bool, err error) {
 	var all []types.ActionExecutionDetail
 	var next *string
 	for range maxActionPages {
@@ -103,15 +136,15 @@ func (c *Client) actionExecutions(ctx context.Context, pipeline string, oldest t
 			NextToken:    next,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("aws: ListActionExecutions %s: %w", pipeline, err)
+			return nil, false, fmt.Errorf("aws: ListActionExecutions %s: %w", pipeline, err)
 		}
 		all = append(all, out.ActionExecutionDetails...)
 		if out.NextToken == nil || pastWindow(out.ActionExecutionDetails, oldest) {
-			break
+			return all, false, nil
 		}
 		next = out.NextToken
 	}
-	return all, nil
+	return all, true, nil
 }
 
 // pastWindow reports whether page holds an action that started before
@@ -150,7 +183,9 @@ func oldestStart(summaries []types.PipelineExecutionSummary) time.Time {
 // reached the deploy action is a DeployRejected deploy.
 // Runs outside the window are dropped. An ended run (superseded, canceled,
 // stopped) keeps the actions that finished and drops those still showing
-// InProgress: they never will finish.
+// InProgress: they never will finish. A superseded run never reached the
+// approval (checked against a real pipeline: superseded runs list no approval
+// action), so supersession cannot produce a false Rejected.
 func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]execution) ([]model.Deploy, []types.ActionExecutionDetail) {
 	deploys := []model.Deploy{}
 	deployed := map[string]int{}                          // execution ID → index in deploys
