@@ -446,9 +446,9 @@ func TestDetailOpenFailingCheckWithoutWebPage(t *testing.T) {
 func TestOpenPassesTheParsedURL(t *testing.T) {
 	o := &opened{}
 	snap := fxDetailSnapshot()
-	snap.Chains[1].PRs[0].URL = "https://github.com/acme/app/pull/330 x"
+	snap.Chains[1].PRs[0].URL = "https://github.com/acme/app/pull/330é"
 	press(t, detailWith(t, o, snap), "o")
-	if want := "https://github.com/acme/app/pull/330%20x"; len(o.urls) != 1 || o.urls[0] != want {
+	if want := "https://github.com/acme/app/pull/330%C3%A9"; len(o.urls) != 1 || o.urls[0] != want {
 		t.Errorf("opened %q, want the URL as parsed and re-encoded %q", o.urls, want)
 	}
 }
@@ -474,5 +474,17 @@ func TestDetailPipelineOnlyWhenAmbiguous(t *testing.T) {
 	}
 	if ls := view(a); strings.Contains(ls[2], "pipeline") {
 		t.Errorf("an unambiguous env line has no pipeline: %q", ls[2])
+	}
+}
+
+func TestDetailOpenSkipsURLsWithUnsafeBytes(t *testing.T) {
+	for _, u := range []string{"https://ci.example.com/x?q=$(id) `id`", "https://ci.example.com/a b", "https://ci.example.com/\"x"} {
+		o := &opened{}
+		snap := fxDetailSnapshot()
+		snap.Chains[1].PRs[1].Failing[1].URL = u
+		press(t, detailWith(t, o, snap), "j", "o")
+		if want := "https://github.com/acme/app/pull/331/checks"; len(o.urls) != 1 || o.urls[0] != want {
+			t.Errorf("%q: opened %q, want %q", u, o.urls, want)
+		}
 	}
 }

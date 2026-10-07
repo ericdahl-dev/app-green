@@ -180,7 +180,8 @@ func TestOpenerCommand(t *testing.T) {
 }
 
 func TestOpenerCommandRejects(t *testing.T) {
-	for _, u := range []string{"-a Calculator", "--help", "file:///etc/passwd", "javascript:alert(1)", "https://", "example.com"} {
+	for _, u := range []string{"-a Calculator", "--help", "file:///etc/passwd", "javascript:alert(1)", "https://", "example.com",
+		"https://example.com/x?q=$(id) `id`", "https://example.com/a b", "https://example.com/\"x", "https://example.com/<x>", "https://example.com/a\\b", "https://example.com/a\x7fb"} {
 		if _, _, err := openerCommand("darwin", u); err == nil {
 			t.Errorf("%q accepted", u)
 		}

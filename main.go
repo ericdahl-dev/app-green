@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -206,8 +205,7 @@ func openLog(path string) (*os.File, error) {
 // read as an option: neither opener accepts "--", and macOS open gets the
 // URL as the value of -u.
 func openerCommand(goos, u string) (string, []string, error) {
-	p, err := url.Parse(u)
-	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+	if _, ok := ui.WebPage(u); !ok {
 		return "", nil, fmt.Errorf("not a web page: %q", u)
 	}
 	switch goos {

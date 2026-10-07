@@ -182,11 +182,16 @@ func (m App) target() string {
 	return ""
 }
 
-// webPage parses u and reports whether it is an absolute http or https URL
-// with a host. Anything else (a file: URL, or "-x" that a browser launcher
-// could take for a flag) is never opened: the URLs come from Jira, GitHub and
-// AWS.
-func webPage(u string) (*url.URL, bool) {
+// WebPage parses u and reports whether it is safe to hand to a browser
+// launcher: an absolute http or https URL with a host and none of the bytes
+// a sloppy launcher could mishandle (space and other controls, DEL, quote,
+// backtick, <, > and backslash). Anything else (a file: URL, or "-x" that a
+// launcher could take for a flag) is never opened: the URLs come from Jira,
+// GitHub, AWS and third-party CI.
+func WebPage(u string) (*url.URL, bool) {
+	if strings.ContainsFunc(u, func(r rune) bool { return r <= ' ' || r == 0x7f || strings.ContainsRune("\"`<>\\", r) }) {
+		return nil, false
+	}
 	p, err := url.Parse(u)
 	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
 		return nil, false
@@ -216,12 +221,12 @@ func (m App) requestRefresh() {
 type openFailedMsg struct{ err error }
 
 // open is a command that opens the first of urls that is a web page (see
-// webPage) in the browser, reporting a failure as openFailedMsg; nil when
+// WebPage) in the browser, reporting a failure as openFailedMsg; nil when
 // none is. Update never opens a page itself.
 func (m App) open(urls ...string) tea.Cmd {
 	var u string
 	for _, c := range urls {
-		if p, ok := webPage(c); ok {
+		if p, ok := WebPage(c); ok {
 			u = p.String() // what was checked is what is opened
 			break
 		}
