@@ -142,8 +142,9 @@ const (
 // Deploy is one pipeline execution as seen from one Env's stage, as the
 // adapter builds it: Status is the stage's deploy action status, except that
 // a run paused at the stage's approval action is DeployAwaitingApproval with
-// that action's ApprovalToken. Adapters drop Abandoned and Superseded
-// executions; they never deployed anything.
+// that action's ApprovalToken. Adapters drop actions that never finished
+// (abandoned, or left in progress by a run that ended), but keep what a
+// superseded, stopped or canceled run did finish: it really ran.
 type Deploy struct {
 	ExecutionID string
 	Status      DeployStatus

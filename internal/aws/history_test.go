@@ -140,9 +140,10 @@ func TestHistoryRevisions(t *testing.T) {
 	}
 }
 
-func TestHistoryDropsRunsThatNeverDeployed(t *testing.T) {
+func TestHistoryKeepsFinishedActionsOfEndedRuns(t *testing.T) {
 	f := &fakePipeline{
 		execs: &codepipeline.ListPipelineExecutionsOutput{PipelineExecutionSummaries: []types.PipelineExecutionSummary{
+			execSummary("exec6", types.PipelineExecutionStatusCancelled, allRevs("fff")...),
 			execSummary("exec5", types.PipelineExecutionStatusStopped, allRevs("eee")...),
 			execSummary("exec4", types.PipelineExecutionStatusSuperseded, allRevs("ddd")...),
 			execSummary("exec3", types.PipelineExecutionStatusCancelled, allRevs("ccc")...),
@@ -150,20 +151,30 @@ func TestHistoryDropsRunsThatNeverDeployed(t *testing.T) {
 			execSummary("exec1", types.PipelineExecutionStatusSucceeded, allRevs("aaa")...),
 		}},
 		actionPages: []*codepipeline.ListActionExecutionsOutput{{ActionExecutionDetails: []types.ActionExecutionDetail{
+			// The run ended while its deploy showed InProgress: it never finished.
+			actionExec("exec6", "Test", "Deploy", types.ActionExecutionStatusInProgress, at(60)),
 			actionExec("exec5", "Test", "Deploy", types.ActionExecutionStatusAbandoned, at(50)),
+			// Superseded while waiting at the approval: its Test deploy
+			// really ran, and the approval it waited at never finished.
+			actionExec("exec4", "Test", "ManualApprovalOfTestEnvironment", types.ActionExecutionStatusInProgress, at(42)),
 			actionExec("exec4", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(40)),
+			// A canceled run's finished failure is still a real failure.
 			actionExec("exec3", "Test", "Deploy", types.ActionExecutionStatusFailed, at(30)),
 			// Stopped after the deploy finished: the deploy still counts.
 			actionExec("exec2", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(20)),
 			actionExec("exec1", "Test", "Deploy", types.ActionExecutionStatusSucceeded, at(10)),
 		}}},
 	}
-	got, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec)
+	got, _, err := (&Client{cp: f}).History(context.Background(), "app-pipeline", testSources, testSpec, prodSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ok := model.DeploySucceeded
-	assertStatuses(t, got["Test"], []string{"exec2", "exec1"}, []model.DeployStatus{ok, ok})
+	assertStatuses(t, got["Test"], []string{"exec4", "exec3", "exec2", "exec1"}, []model.DeployStatus{ok, model.DeployFailed, ok, ok})
+	assertStatuses(t, got["Production"], []string{}, nil)
+	if f.stateCalls != 0 {
+		t.Errorf("GetPipelineState calls = %d, want 0", f.stateCalls)
+	}
 }
 
 // approvalFake is the plan's scenario: exec3 passed Test/Deploy and waits at

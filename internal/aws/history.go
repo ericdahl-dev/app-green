@@ -71,7 +71,7 @@ func (c *Client) History(ctx context.Context, pipeline string, sources map[strin
 			d := model.Deploy{
 				ExecutionID:   awssdk.ToString(p.PipelineExecutionId),
 				Status:        model.DeployAwaitingApproval,
-				Revisions:     maps.Clone(execs[awssdk.ToString(p.PipelineExecutionId)]),
+				Revisions:     maps.Clone(execs[awssdk.ToString(p.PipelineExecutionId)].revs),
 				FinishedAt:    awssdk.ToTime(p.LastUpdateTime),
 				ApprovalToken: approvalToken(state, p),
 			}
@@ -142,16 +142,18 @@ func oldestStart(summaries []types.PipelineExecutionSummary) time.Time {
 
 // stageDeploys returns spec's deploys from its deploy action's executions
 // (one per execution, the latest attempt), and the approval action
-// executions still waiting for a run that has not reached the deploy action. Runs whose execution is not in execs (outside
-// the window, superseded or canceled) are dropped.
-func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]map[string]string) ([]model.Deploy, []types.ActionExecutionDetail) {
+// executions still waiting for a run that has not reached the deploy action.
+// Runs outside the window are dropped. An ended run (superseded, canceled,
+// stopped) keeps the actions that finished and drops those still showing
+// InProgress: they never will finish.
+func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]execution) ([]model.Deploy, []types.ActionExecutionDetail) {
 	deploys := []model.Deploy{}
 	deployed := map[string]int{} // execution ID → index in deploys
 	var waiting []types.ActionExecutionDetail
 	for _, a := range acts {
 		id := awssdk.ToString(a.PipelineExecutionId)
-		revs, known := execs[id]
-		if !known {
+		e, known := execs[id]
+		if !known || (!e.active && a.Status == types.ActionExecutionStatusInProgress) {
 			continue
 		}
 		stage, action := awssdk.ToString(a.StageName), awssdk.ToString(a.ActionName)
@@ -164,7 +166,7 @@ func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[
 			d := model.Deploy{
 				ExecutionID: id,
 				Status:      status,
-				Revisions:   maps.Clone(revs),
+				Revisions:   maps.Clone(e.revs),
 				FinishedAt:  awssdk.ToTime(a.LastUpdateTime),
 			}
 			// A stage retry re-runs the action under the same execution:
@@ -220,21 +222,22 @@ func approvalToken(state *codepipeline.GetPipelineStateOutput, a types.ActionExe
 	return ""
 }
 
-// executions maps each execution ID to the commits it carries, repo → SHA,
-// using sources (repo → source action) inverted. A source action no repo
-// maps to is ignored, and a repo with no revision is left out. Superseded and
-// canceled executions are left out (see model.Deploy), so their action
-// executions are dropped like those outside the window.
-func executions(summaries []types.PipelineExecutionSummary, sources map[string]string) map[string]map[string]string {
+// execution is what History needs from one pipeline execution.
+type execution struct {
+	revs   map[string]string // repo → SHA
+	active bool              // still running: its InProgress actions may finish
+}
+
+// executions maps each execution ID to the commits it carries, using sources
+// (repo → source action) inverted. A source action no repo maps to is
+// ignored, and a repo with no revision is left out.
+func executions(summaries []types.PipelineExecutionSummary, sources map[string]string) map[string]execution {
 	repoOf := make(map[string]string, len(sources))
 	for repo, action := range sources {
 		repoOf[action] = strings.ToLower(repo)
 	}
-	out := make(map[string]map[string]string, len(summaries))
+	out := make(map[string]execution, len(summaries))
 	for _, e := range summaries {
-		if e.Status == types.PipelineExecutionStatusSuperseded || e.Status == types.PipelineExecutionStatusCancelled {
-			continue
-		}
 		revs := map[string]string{}
 		for _, r := range e.SourceRevisions {
 			repo, ok := repoOf[awssdk.ToString(r.ActionName)]
@@ -242,7 +245,8 @@ func executions(summaries []types.PipelineExecutionSummary, sources map[string]s
 				revs[repo] = sha
 			}
 		}
-		out[awssdk.ToString(e.PipelineExecutionId)] = revs
+		active := e.Status == types.PipelineExecutionStatusInProgress || e.Status == types.PipelineExecutionStatusStopping
+		out[awssdk.ToString(e.PipelineExecutionId)] = execution{revs: revs, active: active}
 	}
 	return out
 }
