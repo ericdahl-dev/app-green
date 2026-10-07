@@ -111,6 +111,8 @@ type Resolver struct {
 	now func() time.Time
 	log *slog.Logger
 
+	interval time.Duration
+
 	pollMu sync.Mutex // held for a whole poll; guards everything below
 	cache  *compareCache
 	status map[string]*AdapterStatus
@@ -126,11 +128,18 @@ type Resolver struct {
 	health     map[string]healthData // by Env.ID()
 }
 
-// New returns a Resolver over ad. now is the clock; log receives each
-// poll's warnings and source errors.
+// New returns a Resolver over ad. now is the clock (nil is time.Now); log
+// receives each poll's warnings and source errors (nil discards them).
 func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger) *Resolver {
+	if now == nil {
+		now = time.Now
+	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	r := &Resolver{
 		cfg: cfg, ad: ad, now: now, log: log,
+		interval:  cfg.PollInterval(),
 		cache:     newCompareCache(),
 		status:    map[string]*AdapterStatus{},
 		repos:     map[string]repoData{},
@@ -146,6 +155,34 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 		r.status[n] = &AdapterStatus{Name: n}
 	}
 	return r
+}
+
+// Run polls now, then every poll interval, and on each receive from
+// refresh, sending each Snapshot to out, until ctx is canceled. Polls run
+// one at a time: a refresh that arrives during a poll starts the next one
+// as soon as it ends, and the interval restarts after every poll. Send on
+// refresh without blocking (a buffer of 1 coalesces repeated presses).
+func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan struct{}) {
+	timer := time.NewTimer(r.interval)
+	defer timer.Stop()
+	for {
+		snap := r.Poll(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case out <- snap:
+		case <-ctx.Done():
+			return
+		}
+		timer.Reset(r.interval)
+		select {
+		case <-timer.C:
+		case <-refresh:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // accounts are the config accounts that have envs, in config order.

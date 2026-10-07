@@ -549,3 +549,20 @@ func TestSourceErrorIsLogged(t *testing.T) {
 		t.Errorf("log = %q, want the jira error", out)
 	}
 }
+
+func TestAccountWithoutClientIsAStatusError(t *testing.T) {
+	h := newHarness(t, nil, testEnv, prodEnv)
+	h.withShippedChain()
+	r := resolver.New(loadConfig(t, testEnv, prodEnv), resolver.Adapters{
+		Tracker: h.tracker, Code: h.host, AWS: map[string]resolver.Deployer{"stage-acct": h.stage},
+	}, h.clock.Now, nil)
+
+	snap := r.Poll(context.Background())
+
+	if p := statusOf(t, snap, "aws prod-acct"); p.OK || !strings.Contains(p.Err, "no AWS client") {
+		t.Errorf("prod-acct status = %+v, want a missing-client error", p)
+	}
+	if s := statusOf(t, snap, "aws stage-acct"); !s.OK {
+		t.Errorf("stage-acct status = %+v, want OK", s)
+	}
+}
