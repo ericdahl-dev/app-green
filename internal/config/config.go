@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ericdahl-dev/app-green/internal/aws"
@@ -121,11 +122,12 @@ const (
 )
 
 // DefaultPath is $XDG_CONFIG_HOME/app-green/config.toml, or
-// ~/.config/app-green/config.toml when XDG_CONFIG_HOME is unset. It returns
-// an error when neither is available rather than guessing a relative path.
+// ~/.config/app-green/config.toml when XDG_CONFIG_HOME is unset or relative
+// (the XDG spec says to ignore a relative value). It returns an error when
+// neither is available rather than guessing a relative path.
 func DefaultPath() (string, error) {
 	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
+	if !filepath.IsAbs(base) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("find config path: %w", err)
@@ -218,21 +220,41 @@ func (c *Config) WatchedRepos() []string {
 
 func (c *Config) validateAccounts() error {
 	seen := map[string]bool{}
-	for i, a := range c.AWS.Accounts {
-		field := fmt.Sprintf("aws.accounts[%d]", i)
-		if strings.TrimSpace(a.Name) == "" {
-			return fmt.Errorf("%s.name is required", field)
+	for i := range c.AWS.Accounts {
+		a := &c.AWS.Accounts[i]
+		a.Name = strings.TrimSpace(a.Name)
+		a.Profile = strings.TrimSpace(a.Profile)
+		a.Region = strings.TrimSpace(a.Region)
+		if a.Name == "" {
+			return fmt.Errorf("aws.accounts[%d].name is required", i)
 		}
+		field := fmt.Sprintf("aws.accounts[%d] (%s)", i, a.Name)
 		if seen[a.Name] {
 			return fmt.Errorf("%s.name: duplicate account %q", field, a.Name)
 		}
 		seen[a.Name] = true
-		if strings.TrimSpace(a.Region) == "" {
+		if a.Profile == "" {
+			return fmt.Errorf("%s.profile is required", field)
+		}
+		if a.Region == "" {
 			return fmt.Errorf("%s.region is required", field)
 		}
 	}
 	return nil
 }
+
+// arnName reduces an ECS cluster or service ARN to its name (the part after
+// the last "/", as aws.serviceName does) and returns anything else as is.
+func arnName(s string) string {
+	if !strings.HasPrefix(s, "arn:") {
+		return s
+	}
+	return s[strings.LastIndex(s, "/")+1:]
+}
+
+// pipelineName is the character set CodePipeline allows in pipeline, stage
+// and action names.
+var pipelineName = regexp.MustCompile(`^[A-Za-z0-9.@_-]+$`)
 
 func (c *Config) validateEnvs() error {
 	if len(c.EnvList) == 0 {
@@ -241,7 +263,12 @@ func (c *Config) validateEnvs() error {
 	seen := map[string]bool{}
 	for i := range c.EnvList {
 		e := &c.EnvList[i]
-		field := fmt.Sprintf("envs[%d]", i)
+		for _, f := range []*string{&e.Account, &e.Pipeline, &e.Stage, &e.DeployAction, &e.ApprovalStage, &e.ApprovalAction} {
+			*f = strings.TrimSpace(*f)
+		}
+		// field labels errors with the env's ID, e.g.
+		// "envs[1] (stage-acct/app-pipeline/Production)".
+		field := fmt.Sprintf("envs[%d] (%s/%s/%s)", i, e.Account, e.Pipeline, e.Stage)
 		for _, req := range []struct{ key, val string }{
 			{"account", e.Account},
 			{"pipeline", e.Pipeline},
@@ -252,29 +279,53 @@ func (c *Config) validateEnvs() error {
 				return fmt.Errorf("%s.%s is required", field, req.key)
 			}
 		}
+		for _, n := range []struct{ key, val string }{
+			{"pipeline", e.Pipeline},
+			{"stage", e.Stage},
+			{"deploy_action", e.DeployAction},
+			{"approval_stage", e.ApprovalStage},
+			{"approval_action", e.ApprovalAction},
+		} {
+			if n.val != "" && !pipelineName.MatchString(n.val) {
+				return fmt.Errorf("%s.%s: %q has characters outside A-Z a-z 0-9 . @ _ - (CodePipeline names allow only these)", field, n.key, n.val)
+			}
+		}
 		if _, ok := c.Account(e.Account); !ok {
 			return fmt.Errorf("%s.account: unknown account %q (not in aws.accounts)", field, e.Account)
 		}
 		id := c.env(i).ID()
 		if seen[id] {
-			return fmt.Errorf("%s: duplicate env %s", field, id)
+			return fmt.Errorf("%s: duplicate env", field)
 		}
 		seen[id] = true
 		if e.ApprovalStage != "" && e.ApprovalAction == "" {
 			return fmt.Errorf("%s.approval_action is required when approval_stage is set", field)
 		}
-		for j, ecs := range e.ECS {
+		if spec := e.stageSpec(); spec.ApprovalAction != "" && spec.ApprovalStage == spec.Stage && spec.ApprovalAction == spec.DeployAction {
+			return fmt.Errorf("%s.approval_action must differ from deploy_action when the approval is in the same stage", field)
+		}
+		services := map[string]bool{} // "cluster/service" names, ARNs reduced
+		for j := range e.ECS {
+			ecs := &e.ECS[j]
 			f := fmt.Sprintf("%s.ecs[%d]", field, j)
-			if strings.TrimSpace(ecs.Cluster) == "" {
+			ecs.Cluster = strings.TrimSpace(ecs.Cluster)
+			if ecs.Cluster == "" {
 				return fmt.Errorf("%s.cluster is required", f)
 			}
 			if len(ecs.Services) == 0 {
 				return fmt.Errorf("%s.services: no services listed", f)
 			}
-			for _, svc := range ecs.Services {
-				if strings.TrimSpace(svc) == "" {
+			for k := range ecs.Services {
+				ecs.Services[k] = strings.TrimSpace(ecs.Services[k])
+				if ecs.Services[k] == "" {
 					return fmt.Errorf("%s.services: empty service name", f)
 				}
+				name := arnName(ecs.Services[k])
+				key := arnName(ecs.Cluster) + "/" + name
+				if services[key] {
+					return fmt.Errorf("%s.services: duplicate service %q", f, name)
+				}
+				services[key] = true
 			}
 		}
 		repos, err := normalizeRepos(field+".repos", e.Repos)
@@ -283,7 +334,7 @@ func (c *Config) validateEnvs() error {
 		}
 		e.Repos = repos
 		if len(repos) == 0 {
-			c.warnings = append(c.warnings, fmt.Sprintf("%s (%s) lists no repos: app-green will guess them from deploy history, a last resort that a missing or truncated history defeats - add repos = [\"owner/name\"]", field, c.env(i).ID()))
+			c.warnings = append(c.warnings, fmt.Sprintf("%s lists no repos: app-green will guess them from deploy history, a last resort that a missing or truncated history defeats - add repos = [\"owner/name\"]", field))
 		}
 	}
 	return nil
@@ -345,7 +396,7 @@ func (c *Config) validateGitHub() error {
 }
 
 // repoName is a lowercased GitHub "owner/name".
-var repoName = regexp.MustCompile(`^[a-z0-9-]+/[a-z0-9._-]+$`)
+var repoName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*/[a-z0-9._-]+$`)
 
 // normalizeRepos lowercases each "owner/name" in repos (adapters compare
 // repos lowercased) and checks its form. field names the key in errors.
@@ -353,7 +404,8 @@ func normalizeRepos(field string, repos []string) ([]string, error) {
 	out := make([]string, len(repos))
 	for i, r := range repos {
 		out[i] = strings.ToLower(strings.TrimSpace(r))
-		if !repoName.MatchString(out[i]) {
+		_, name, _ := strings.Cut(out[i], "/")
+		if !repoName.MatchString(out[i]) || name == "." || name == ".." {
 			return nil, fmt.Errorf("%s: %q is not an owner/name repo", field, r)
 		}
 	}
@@ -375,6 +427,10 @@ func (c *Config) validateJira() error {
 		// Not quoted back: it holds a password.
 		return errors.New("jira.site must not contain a user name or password")
 	}
+	if err == nil && (u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(j.Site, "#")) {
+		// Not quoted back: a query may hold a token.
+		return errors.New("jira.site must not have a query or fragment")
+	}
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("jira.site must be an https URL such as https://example.atlassian.net, got %q", j.Site)
 	}
@@ -387,10 +443,15 @@ func (c *Config) validateJira() error {
 	if len(j.Projects) == 0 {
 		return errors.New("jira.projects: no projects configured")
 	}
+	seen := map[string]bool{}
 	for _, p := range j.Projects {
 		if !projectKey.MatchString(p) {
 			return fmt.Errorf("jira.projects: %q is not a Jira project key (uppercase letters, digits and _, starting with a letter)", p)
 		}
+		if seen[p] {
+			return fmt.Errorf("jira.projects: duplicate project %q", p)
+		}
+		seen[p] = true
 	}
 	return nil
 }
@@ -416,6 +477,9 @@ func durationOr(v string, def time.Duration) (time.Duration, error) {
 		}
 		total = time.Duration(n) * 24 * time.Hour
 		s = s[len(m[0]):]
+		if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
+			return 0, bad // "1d-23h" would quietly mean 1h
+		}
 	}
 	if s != "" {
 		d, err := time.ParseDuration(s)
@@ -440,13 +504,27 @@ type PipelineKey struct {
 	Pipeline string
 }
 
-// StageSpecs groups the envs' stage specs by pipeline, each group in file
-// order, for aws.Client.History.
-func (c *Config) StageSpecs() map[PipelineKey][]aws.StageSpec {
-	out := map[PipelineKey][]aws.StageSpec{}
+// PipelineSpecs is one pipeline and the stage specs of its envs.
+type PipelineSpecs struct {
+	Key   PipelineKey
+	Specs []aws.StageSpec
+}
+
+// StageSpecs groups the envs' stage specs by pipeline, for
+// aws.Client.History. Pipelines come in order of first appearance in the
+// file and each group's specs in file order, so the result is stable.
+func (c *Config) StageSpecs() []PipelineSpecs {
+	var out []PipelineSpecs
+	pos := map[PipelineKey]int{}
 	for _, e := range c.EnvList {
 		k := PipelineKey{Account: e.Account, Pipeline: e.Pipeline}
-		out[k] = append(out[k], e.stageSpec())
+		i, ok := pos[k]
+		if !ok {
+			i = len(out)
+			pos[k] = i
+			out = append(out, PipelineSpecs{Key: k})
+		}
+		out[i].Specs = append(out[i].Specs, e.stageSpec())
 	}
 	return out
 }
@@ -529,8 +607,29 @@ var tokenCommandTimeout = 10 * time.Second
 // maxStderr caps how much of a failed token_command's stderr an error quotes.
 const maxStderr = 200
 
+// quoteStderr trims s and cuts it to at most maxStderr bytes on a rune
+// boundary, marking a cut with "...".
+func quoteStderr(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= maxStderr {
+		return s
+	}
+	n := maxStderr
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
+}
+
 // resolveToken reads the variable env, or runs command with sh -c and
-// trims its output. Errors never include stdout, where the token would be.
+// trims its output.
+//
+// A command runs at most tokenCommandTimeout (10s) plus a 1s WaitDelay, so
+// with both tokens on commands startup can stall about 22s in the worst case.
+// Errors never include stdout, where the token is, but a failed command's
+// stderr is quoted (trimmed, at most maxStderr bytes) to explain the
+// failure: a command that echoes the token to stderr and then fails would
+// leak it into the error.
 func resolveToken(table, env, command string) (string, error) {
 	if command != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), tokenCommandTimeout)
@@ -544,11 +643,7 @@ func resolveToken(table, env, command string) (string, error) {
 			return "", fmt.Errorf("%s.token_command timed out after %v", table, tokenCommandTimeout)
 		}
 		if err != nil {
-			msg := strings.TrimSpace(stderr.String())
-			if len(msg) > maxStderr {
-				msg = msg[:maxStderr] + "..."
-			}
-			return "", fmt.Errorf("%s.token_command failed: %w: %s", table, err, msg)
+			return "", fmt.Errorf("%s.token_command failed: %w: %s", table, err, quoteStderr(stderr.String()))
 		}
 		tok := strings.TrimSpace(string(out))
 		if tok == "" {

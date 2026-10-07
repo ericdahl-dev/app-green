@@ -1,15 +1,16 @@
 package config
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
+	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ericdahl-dev/app-green/internal/aws"
 	"github.com/ericdahl-dev/app-green/internal/model"
 	"github.com/ericdahl-dev/app-green/internal/rules"
-	"path/filepath"
-	"strings"
-	"testing"
 )
 
 func load(t *testing.T, name string) *Config {
@@ -49,19 +50,38 @@ func TestLoadBad(t *testing.T) {
 		{"bad-github-no-author.toml", "github.author is required"},
 		{"bad-no-repos-to-watch.toml", "no repos to watch: set github.repos or envs[].repos"},
 		{"bad-github-repo.toml", `github.repos: "acme" is not an owner/name repo`},
-		{"bad-unknown-account.toml", `envs[1].account: unknown account "nope-acct"`},
+		{"bad-unknown-account.toml", `envs[1] (nope-acct/app-pipeline/Production).account: unknown account "nope-acct"`},
 		{"bad-no-envs.toml", "envs: no envs configured"},
-		{"bad-duplicate-env.toml", "envs[1]: duplicate env stage-acct/app-pipeline/Test"},
-		{"bad-duplicate-account.toml", `aws.accounts[1].name: duplicate account "stage-acct"`},
-		{"bad-account-no-region.toml", "aws.accounts[1].region is required"},
-		{"bad-env-no-deploy-action.toml", "envs[1].deploy_action is required"},
-		{"bad-approval-stage-only.toml", "envs[1].approval_action is required when approval_stage is set"},
-		{"bad-ecs-no-cluster.toml", "envs[0].ecs[0].cluster is required"},
-		{"bad-ecs-no-services.toml", "envs[0].ecs[0].services: no services listed"},
+		{"bad-duplicate-env.toml", "envs[1] (stage-acct/app-pipeline/Test): duplicate env"},
+		{"bad-duplicate-account.toml", `aws.accounts[1] (stage-acct).name: duplicate account "stage-acct"`},
+		{"bad-account-no-region.toml", "aws.accounts[1] (prod-acct).region is required"},
+		{"bad-env-no-deploy-action.toml", "envs[1] (prod-acct/app-pipeline/Production).deploy_action is required"},
+		{"bad-approval-stage-only.toml", "envs[1] (prod-acct/app-pipeline/Production).approval_action is required when approval_stage is set"},
+		{"bad-ecs-no-cluster.toml", "envs[0] (stage-acct/app-pipeline/Test).ecs[0].cluster is required"},
+		{"bad-ecs-no-services.toml", "envs[0] (stage-acct/app-pipeline/Test).ecs[0].services: no services listed"},
 		{"bad-token-both.toml", "github: set exactly one of token_env or token_command"},
 		{"bad-token-none.toml", "jira: set exactly one of token_env or token_command"},
 		{"bad-duration-unit.toml", `settings.done_grace: invalid duration "2x"`},
 		{"bad-poll-interval.toml", `settings.poll_interval must be at least 15s, got "10s"`},
+		{"bad-jira-query.toml", `jira.site must not have a query or fragment`},
+		{"bad-jira-forcequery.toml", `jira.site must not have a query or fragment`},
+		{"bad-jira-fragment.toml", `jira.site must not have a query or fragment`},
+		{"bad-project-duplicate.toml", `jira.projects: duplicate project "ABC"`},
+		{"bad-account-no-profile.toml", `aws.accounts[1] (prod-acct).profile is required`},
+		{"bad-account-blank-region.toml", `aws.accounts[1] (prod-acct).region is required`},
+		{"bad-env-repo.toml", `envs[1] (prod-acct/app-pipeline/Production).repos: "acme" is not an owner/name repo`},
+		{"bad-env-pipeline-chars.toml", `envs[1] (prod-acct/app pipeline/Production).pipeline: "app pipeline" has characters outside A-Z a-z 0-9 . @ _ -`},
+		{"bad-env-action-chars.toml", `envs[1] (prod-acct/app-pipeline/Production).deploy_action: "deploy/now" has characters outside`},
+		{"bad-env-approval-stage-chars.toml", `envs[1] (prod-acct/app-pipeline/Production).approval_stage: "Test!" has characters outside`},
+		{"bad-approval-is-deploy.toml", `envs[0] (stage-acct/app-pipeline/Test).approval_action must differ from deploy_action when the approval is in the same stage`},
+		{"bad-ecs-duplicate.toml", `envs[0] (stage-acct/app-pipeline/Test).ecs[2].services: duplicate service "s1"`},
+		{"bad-ecs-duplicate-same-entry.toml", `envs[0] (stage-acct/app-pipeline/Test).ecs[0].services: duplicate service "s1"`},
+		{"bad-repo-leading-dash.toml", `github.repos: "-acme/app" is not an owner/name repo`},
+		{"bad-repo-dot.toml", `github.repos: "acme/." is not an owner/name repo`},
+		{"bad-repo-dotdot.toml", `github.repos: "acme/.." is not an owner/name repo`},
+		{"bad-repo-two-slashes.toml", `github.repos: "acme/app/x" is not an owner/name repo`},
+		{"bad-duration-day-minus.toml", `settings.fade_after: invalid duration "1d-23h"`},
+		{"bad-duration-day-plus.toml", `settings.fade_after: invalid duration "1d+1h"`},
 		{"bad-duration-negative.toml", `settings.stale_review_after must be positive, got "-1h"`},
 	}
 	for _, tt := range tests {
@@ -124,18 +144,19 @@ func TestEnvs(t *testing.T) {
 
 func TestStageSpecs(t *testing.T) {
 	got := load(t, "grouped.toml").StageSpecs()
-	want := map[PipelineKey][]aws.StageSpec{
-		{Account: "stage-acct", Pipeline: "app-pipeline"}: {
+	// Pipelines in order of first appearance, specs in file order.
+	want := []PipelineSpecs{
+		{Key: PipelineKey{Account: "stage-acct", Pipeline: "app-pipeline"}, Specs: []aws.StageSpec{
 			// approval_stage defaults to the env's own stage.
 			{Stage: "Test", DeployAction: "Deploy", ApprovalStage: "Test", ApprovalAction: "ApproveTest"},
 			{Stage: "Staging", DeployAction: "Deploy"},
-		},
-		{Account: "prod-acct", Pipeline: "app-pipeline"}: {
+		}},
+		{Key: PipelineKey{Account: "prod-acct", Pipeline: "app-pipeline"}, Specs: []aws.StageSpec{
 			{Stage: "Production", DeployAction: "deploy", ApprovalStage: "Test", ApprovalAction: "ApproveProd"},
-		},
-		{Account: "stage-acct", Pipeline: "other-pipeline"}: {
+		}},
+		{Key: PipelineKey{Account: "stage-acct", Pipeline: "other-pipeline"}, Specs: []aws.StageSpec{
 			{Stage: "Test", DeployAction: "Deploy"},
-		},
+		}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("StageSpecs() = %+v\nwant %+v", got, want)
@@ -214,10 +235,12 @@ func TestDefaultPath(t *testing.T) {
 	if p, err := DefaultPath(); err != nil || p != "/xdg/app-green/config.toml" {
 		t.Errorf("DefaultPath() with XDG_CONFIG_HOME = %q, %v", p, err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/home/me")
-	if p, err := DefaultPath(); err != nil || p != "/home/me/.config/app-green/config.toml" {
-		t.Errorf("DefaultPath() without XDG_CONFIG_HOME = %q, %v", p, err)
+	for _, xdg := range []string{"", "relative/dir"} { // the XDG spec says ignore a relative path
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		if p, err := DefaultPath(); err != nil || p != "/home/me/.config/app-green/config.toml" {
+			t.Errorf("DefaultPath() with XDG_CONFIG_HOME=%q = %q, %v", xdg, p, err)
+		}
 	}
 }
 
@@ -243,5 +266,65 @@ func TestWatchedRepos(t *testing.T) {
 		if got := load(t, tt.file).WatchedRepos(); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s WatchedRepos() = %v, want %v", tt.file, got, tt.want)
 		}
+	}
+}
+
+func TestJiraSitePath(t *testing.T) {
+	if got := load(t, "site-path.toml").Jira.Site; got != "https://example.atlassian.net/jira" {
+		t.Errorf("site = %q, want the path kept and the trailing slash trimmed", got)
+	}
+}
+
+func TestWhitespaceTrimmed(t *testing.T) {
+	c := load(t, "whitespace.toml")
+	ref := load(t, "ok.toml")
+	if !reflect.DeepEqual(c.AWS.Accounts, ref.AWS.Accounts) {
+		t.Errorf("accounts = %+v, want %+v", c.AWS.Accounts, ref.AWS.Accounts)
+	}
+	if !reflect.DeepEqual(c.Envs(), ref.Envs()) {
+		t.Errorf("Envs() = %+v, want %+v", c.Envs(), ref.Envs())
+	}
+	if !reflect.DeepEqual(c.StageSpecs(), ref.StageSpecs()) {
+		t.Errorf("StageSpecs() = %+v, want %+v", c.StageSpecs(), ref.StageSpecs())
+	}
+}
+
+func TestRepoNames(t *testing.T) {
+	for _, r := range []string{"acme/app", "acme_co/app.js", "a1-b/.github", "acme/my_app-2"} {
+		if _, err := normalizeRepos("github.repos", []string{r}); err != nil {
+			t.Errorf("normalizeRepos(%q) = %v, want ok", r, err)
+		}
+	}
+}
+
+func TestTokenCommandTimeout(t *testing.T) {
+	old := tokenCommandTimeout
+	tokenCommandTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { tokenCommandTimeout = old })
+	start := time.Now()
+	_, err := load(t, "token-slow.toml").JiraToken()
+	if err == nil || !strings.Contains(err.Error(), "jira.token_command timed out after 100ms") {
+		t.Errorf("JiraToken() error = %v, want a timeout", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("JiraToken() took %v, want it cut off near the timeout", d)
+	}
+}
+
+func TestQuoteStderrRuneBoundary(t *testing.T) {
+	got := quoteStderr(strings.Repeat("\u00e9", maxStderr)) // 2 bytes each
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "...") || len(got) > maxStderr+len("...") {
+		t.Errorf("quoteStderr cut badly: %q (len %d)", got, len(got))
+	}
+	if got := quoteStderr("  short\n"); got != "short" {
+		t.Errorf("quoteStderr(short) = %q", got)
+	}
+}
+
+func TestEnvsReturnsCopies(t *testing.T) {
+	c := load(t, "ok.toml")
+	c.Envs()[0].Repos[0] = "changed/repo"
+	if got := c.Envs()[0].Repos[0]; got != "acme/app" {
+		t.Errorf("Envs() shares Repos with the config: got %q after editing a copy", got)
 	}
 }
