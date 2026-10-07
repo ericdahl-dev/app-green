@@ -518,7 +518,7 @@ func TestEnvReposFromSourcesOnlyWhenConfigHasNone(t *testing.T) {
 	}
 }
 
-func TestWarningsDedupedAndLoggedOncePerPoll(t *testing.T) {
+func TestWarningsAreDedupedWithinAPoll(t *testing.T) {
 	var buf safeBuffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	h := newHarness(t, log, testEnv, apiEnv)
@@ -539,9 +539,10 @@ func TestWarningsDedupedAndLoggedOncePerPoll(t *testing.T) {
 			t.Errorf("%q logged %d times in one poll, want 1\n%s", w, n, buf.String())
 		}
 	}
+	// Still there next poll: not logged again (TestPollWarningIsLoggedOnceWhileItPersists).
 	h.r.Poll(context.Background())
-	if n := strings.Count(buf.String(), "github: w2"); n != 2 {
-		t.Errorf("w2 logged %d times over two polls, want 2", n)
+	if n := strings.Count(buf.String(), "github: w2"); n != 1 {
+		t.Errorf("w2 logged %d times over two polls, want 1", n)
 	}
 }
 
@@ -632,5 +633,37 @@ func TestSSOFlagOnlyForAWS(t *testing.T) {
 
 	if j := statusOf(t, snap, "jira"); j.SSO {
 		t.Errorf("jira status = %+v, want SSO false (SSO is an AWS state)", j)
+	}
+}
+
+func TestPollWarningIsLoggedOnceWhileItPersists(t *testing.T) {
+	var buf safeBuffer
+	h := newHarness(t, slog.New(slog.NewTextHandler(&buf, nil)))
+	h.withShippedChain()
+	h.tracker.set(func(f *fakeTracker) { f.byKey = map[string]model.Ticket{"ABC-9": ticket("ABC-9")} })
+	h.host.set(func(f *fakeHost) { f.prs[repo] = append(f.prs[repo], openPR(9, "ABC-9: x")) })
+	fail := func(err error) { h.tracker.set(func(f *fakeTracker) { f.byKeyErr = err }) }
+	count := func() int { return strings.Count(buf.String(), "poll warning") }
+	h.r.Poll(context.Background())
+
+	fail(errors.New("jira: HTTP 500"))
+	h.r.Poll(context.Background())
+	first := count()
+	if first == 0 {
+		t.Fatalf("the warning is logged when it first appears: %q", buf.String())
+	}
+	h.r.Poll(context.Background())
+	h.r.Poll(context.Background())
+	if got := count(); got != first {
+		t.Errorf("a persistent warning is logged once: %d lines, want %d", got, first)
+	}
+
+	// Once it clears and returns it is news again.
+	fail(nil)
+	h.r.Poll(context.Background())
+	fail(errors.New("jira: HTTP 500"))
+	h.r.Poll(context.Background())
+	if got := count(); got != 2*first {
+		t.Errorf("a warning that returns is logged again: %d lines, want %d", got, 2*first)
 	}
 }
