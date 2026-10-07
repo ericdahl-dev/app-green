@@ -452,3 +452,27 @@ func TestOpenPassesTheParsedURL(t *testing.T) {
 		t.Errorf("opened %q, want the URL as parsed and re-encoded %q", o.urls, want)
 	}
 }
+
+func TestDetailPipelineOnlyWhenAmbiguous(t *testing.T) {
+	env := func(pipeline string) model.Env {
+		return model.Env{Account: "stage-acct", Pipeline: pipeline, Stage: "Test"}
+	}
+	view := func(slots ...model.EnvSlot) []string {
+		c := model.Chain{Ticket: model.Ticket{Key: "ABC-5", Title: "Two pipelines"}, Slots: slots}
+		snap := resolver.Snapshot{Chains: []model.Chain{c}, At: now}
+		return trimmed(press(t, update(t, newApp(t), snap), "enter"))
+	}
+	a := model.EnvSlot{Env: env("app-pipeline"), State: model.SlotNotYet, Applies: true}
+	b := model.EnvSlot{Env: env("web-pipeline"), State: model.SlotNotYet, Applies: true}
+
+	ls := view(a, b) // the same account and stage in two pipelines
+	if want := " >stage-acct  Test  app-pipeline  not yet"; ls[2] != want {
+		t.Errorf("\n got %q\nwant %q", ls[2], want)
+	}
+	if want := "  stage-acct  Test  web-pipeline  not yet"; ls[3] != want {
+		t.Errorf("\n got %q\nwant %q", ls[3], want)
+	}
+	if ls := view(a); strings.Contains(ls[2], "pipeline") {
+		t.Errorf("an unambiguous env line has no pipeline: %q", ls[2])
+	}
+}

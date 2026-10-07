@@ -177,17 +177,28 @@ func (m App) detailBody(width int) []string {
 		body = append(body, m.styles.dim.Render(fit("~ stale: "+clean(c.StaleReason), width)))
 	}
 	items := detailItems(c)
-	acctW, stageW := 0, 0
+	acctW, stageW, pipeW := 0, 0, 0
+	seen := map[[2]string]bool{}
+	ambiguous := false // two envs share an account and stage: the pipeline tells them apart
 	for _, it := range items {
 		if it.slot != nil {
-			acctW = max(acctW, ansi.StringWidth(clean(it.slot.Env.Account)))
-			stageW = max(stageW, ansi.StringWidth(clean(it.slot.Env.Stage)))
+			e := it.slot.Env
+			acctW = max(acctW, ansi.StringWidth(clean(e.Account)))
+			stageW = max(stageW, ansi.StringWidth(clean(e.Stage)))
+			pipeW = max(pipeW, ansi.StringWidth(clean(e.Pipeline)))
+			k := [2]string{e.Account, e.Stage}
+			ambiguous = ambiguous || seen[k]
+			seen[k] = true
 		}
 	}
 	for i, it := range items {
 		var line string
 		if it.slot != nil {
-			line = "  " + fit(clean(it.slot.Env.Account), acctW) + "  " + fit(clean(it.slot.Env.Stage), stageW) + "  " + slotText(*it.slot, now)
+			line = "  " + fit(clean(it.slot.Env.Account), acctW) + "  " + fit(clean(it.slot.Env.Stage), stageW) + "  "
+			if ambiguous {
+				line += fit(clean(it.slot.Env.Pipeline), pipeW) + "  "
+			}
+			line += slotText(*it.slot, now)
 		} else {
 			line = "  " + prLine(*it.pr, now)
 		}
