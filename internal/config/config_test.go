@@ -47,7 +47,7 @@ func TestLoadBad(t *testing.T) {
 		{"bad-no-projects.toml", "jira.projects: no projects configured"},
 		{"bad-project-key.toml", `jira.projects: "abc" is not a Jira project key`},
 		{"bad-github-no-author.toml", "github.author is required"},
-		{"bad-github-no-repos.toml", "github.repos: no repos configured"},
+		{"bad-no-repos-to-watch.toml", "no repos to watch: set github.repos or envs[].repos"},
 		{"bad-github-repo.toml", `github.repos: "acme" is not an owner/name repo`},
 		{"bad-unknown-account.toml", `envs[1].account: unknown account "nope-acct"`},
 		{"bad-no-envs.toml", "envs: no envs configured"},
@@ -60,6 +60,8 @@ func TestLoadBad(t *testing.T) {
 		{"bad-ecs-no-services.toml", "envs[0].ecs[0].services: no services listed"},
 		{"bad-token-both.toml", "github: set exactly one of token_env or token_command"},
 		{"bad-token-none.toml", "jira: set exactly one of token_env or token_command"},
+		{"bad-duration-unit.toml", `settings.done_grace: invalid duration "2x"`},
+		{"bad-poll-interval.toml", `settings.poll_interval must be at least 15s, got "10s"`},
 		{"bad-duration-negative.toml", `settings.stale_review_after must be positive, got "-1h"`},
 	}
 	for _, tt := range tests {
@@ -69,6 +71,14 @@ func TestLoadBad(t *testing.T) {
 				t.Fatalf("Load(%s) error = %v, want it to contain %q", tt.file, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestThresholdsDays(t *testing.T) {
+	got := load(t, "days.toml").Thresholds()
+	want := rules.Thresholds{StaleReview: 48 * time.Hour, DoneGrace: DefaultDoneGrace, FadeAfter: 36 * time.Hour, PartialProd: 90 * time.Minute}
+	if got != want {
+		t.Errorf("days.toml Thresholds() = %+v, want %+v", got, want)
 	}
 }
 
@@ -208,5 +218,30 @@ func TestDefaultPath(t *testing.T) {
 	t.Setenv("HOME", "/home/me")
 	if p, err := DefaultPath(); err != nil || p != "/home/me/.config/app-green/config.toml" {
 		t.Errorf("DefaultPath() without XDG_CONFIG_HOME = %q, %v", p, err)
+	}
+}
+
+func TestPollInterval(t *testing.T) {
+	if got := load(t, "ok.toml").PollInterval(); got != 60*time.Second {
+		t.Errorf("ok.toml PollInterval() = %v, want default 60s", got)
+	}
+	if got := load(t, "days.toml").PollInterval(); got != 30*time.Second {
+		t.Errorf("days.toml PollInterval() = %v, want 30s", got)
+	}
+}
+
+func TestWatchedRepos(t *testing.T) {
+	tests := []struct {
+		file string
+		want []string
+	}{
+		{"ok.toml", []string{"acme/app"}},
+		{"grouped.toml", []string{"acme/app", "acme/other"}},
+		{"env-repos-only.toml", []string{"acme/app", "acme/lib"}},
+	}
+	for _, tt := range tests {
+		if got := load(t, tt.file).WatchedRepos(); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s WatchedRepos() = %v, want %v", tt.file, got, tt.want)
+		}
 	}
 }

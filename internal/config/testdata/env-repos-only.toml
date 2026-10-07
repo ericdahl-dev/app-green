@@ -12,8 +12,7 @@
 
 [github]
   author = "me"
-  token_env = "GITHUB_TOKEN"       # or token_command = "gh auth token"
-  repos = []
+  token_env = "GITHUB_TOKEN"       # no repos: the envs' repos are watched
 
 [[aws.accounts]]
   name = "stage-acct"
@@ -44,4 +43,4 @@
   approval_stage = "Test"
   approval_action = "ApproveProd"
   prod = true
-  repos = ["acme/app"]
+  repos = ["acme/lib", "Acme/App"]

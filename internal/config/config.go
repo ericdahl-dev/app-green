@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,13 +23,16 @@ import (
 	"github.com/ericdahl-dev/app-green/internal/rules"
 )
 
-// Settings is the optional [settings] table of durations written like "48h".
-// Empty means "use the default"; read them through Thresholds.
+// Settings is the optional [settings] table of durations written like "2d",
+// "48h" or "90m".
+// Empty means "use the default"; read them through Thresholds and
+// PollInterval.
 type Settings struct {
 	StaleReviewAfter string `toml:"stale_review_after"`
 	DoneGrace        string `toml:"done_grace"`
 	FadeAfter        string `toml:"fade_after"`
 	PartialProdAfter string `toml:"partial_prod_after"`
+	PollInterval     string `toml:"poll_interval"` // read through PollInterval
 }
 
 // Jira is the [jira] table.
@@ -42,10 +46,12 @@ type Jira struct {
 
 // GitHub is the [github] table.
 type GitHub struct {
-	Author       string   `toml:"author"`
-	TokenEnv     string   `toml:"token_env"`
-	TokenCommand string   `toml:"token_command"`
-	Repos        []string `toml:"repos"` // "owner/name", lowercased by Load
+	Author       string `toml:"author"`
+	TokenEnv     string `toml:"token_env"`
+	TokenCommand string `toml:"token_command"`
+	// Repos are extra "owner/name" repos to watch, lowercased by Load.
+	// Optional: WatchedRepos adds every env's repos.
+	Repos []string `toml:"repos"`
 }
 
 // Account is one [[aws.accounts]] entry.
@@ -70,10 +76,15 @@ type ECS struct {
 
 // EnvConfig is one [[envs]] entry as the user wrote it.
 type EnvConfig struct {
-	Account        string   `toml:"account"`
-	Pipeline       string   `toml:"pipeline"`
-	Stage          string   `toml:"stage"`
-	DeployAction   string   `toml:"deploy_action"`
+	Account      string `toml:"account"`
+	Pipeline     string `toml:"pipeline"`
+	Stage        string `toml:"stage"`
+	DeployAction string `toml:"deploy_action"`
+	// ApprovalStage and ApprovalAction name the manual approval that gates
+	// this env. ApprovalAction has no default. ApprovalStage defaults to
+	// Stage (an approval inside the env's own stage); set it when the
+	// approval sits in another stage, usually the one before. Setting
+	// ApprovalStage without ApprovalAction is an error.
 	ApprovalStage  string   `toml:"approval_stage"`
 	ApprovalAction string   `toml:"approval_action"`
 	Prod           bool     `toml:"prod"`
@@ -89,8 +100,9 @@ type Config struct {
 	AWS      AWS         `toml:"aws"`
 	EnvList  []EnvConfig `toml:"envs"`
 
-	thresholds rules.Thresholds
-	warnings   []string
+	thresholds   rules.Thresholds
+	pollInterval time.Duration
+	warnings     []string
 }
 
 // Default thresholds, used when [settings] leaves a key unset.
@@ -99,6 +111,13 @@ const (
 	DefaultDoneGrace   = 2 * time.Hour
 	DefaultFadeAfter   = 24 * time.Hour
 	DefaultPartialProd = 4 * time.Hour
+)
+
+// DefaultPollInterval is how often the resolver polls when
+// settings.poll_interval is unset; MinPollInterval is the lowest allowed.
+const (
+	DefaultPollInterval = 60 * time.Second
+	MinPollInterval     = 15 * time.Second
 )
 
 // DefaultPath is $XDG_CONFIG_HOME/app-green/config.toml, or
@@ -160,6 +179,14 @@ func (c *Config) validate() error {
 		}
 		*d.into = v
 	}
+	poll, err := durationOr(c.Settings.PollInterval, DefaultPollInterval)
+	if err != nil {
+		return fmt.Errorf("settings.poll_interval: %w", err)
+	}
+	if poll < MinPollInterval {
+		return fmt.Errorf("settings.poll_interval must be at least %v, got %q", MinPollInterval, c.Settings.PollInterval)
+	}
+	c.pollInterval = poll
 	if err := c.validateJira(); err != nil {
 		return err
 	}
@@ -169,7 +196,24 @@ func (c *Config) validate() error {
 	if err := c.validateAccounts(); err != nil {
 		return err
 	}
-	return c.validateEnvs()
+	if err := c.validateEnvs(); err != nil {
+		return err
+	}
+	if len(c.WatchedRepos()) == 0 {
+		return errors.New("no repos to watch: set github.repos or envs[].repos")
+	}
+	return nil
+}
+
+// WatchedRepos are the repos whose PRs are fetched: github.repos and every
+// env's repos, lowercased, deduplicated and sorted.
+func (c *Config) WatchedRepos() []string {
+	all := slices.Clone(c.GitHub.Repos)
+	for _, e := range c.EnvList {
+		all = append(all, e.Repos...)
+	}
+	slices.Sort(all)
+	return slices.Compact(all)
 }
 
 func (c *Config) validateAccounts() error {
@@ -292,9 +336,6 @@ func (c *Config) validateGitHub() error {
 	if err := checkTokenSource("github", g.TokenEnv, g.TokenCommand); err != nil {
 		return err
 	}
-	if len(g.Repos) == 0 {
-		return errors.New("github.repos: no repos configured")
-	}
 	repos, err := normalizeRepos("github.repos", g.Repos)
 	if err != nil {
 		return err
@@ -354,17 +395,40 @@ func (c *Config) validateJira() error {
 	return nil
 }
 
-// durationOr parses v like "48h" or "90m", or returns def when v is empty.
+// dayPart is a leading whole number of days, as in "2d" or "1d12h".
+var dayPart = regexp.MustCompile(`^(\d+)d`)
+
+// durationOr parses v, or returns def when v is empty. v is a Go duration
+// ("48h", "90m"), optionally led by whole days ("2d", "1d12h"). Adapted from
+// ParseAge in ../jira-green/internal/model/threshold.go; the caller checks
+// the sign.
 func durationOr(v string, def time.Duration) (time.Duration, error) {
-	if v == "" {
+	s := strings.TrimSpace(v)
+	if s == "" {
 		return def, nil
 	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0, fmt.Errorf("invalid duration %q (use a form like 48h or 90m)", v)
+	bad := fmt.Errorf("invalid duration %q (use a form like 2d, 48h or 90m)", v)
+	var total time.Duration
+	if m := dayPart.FindStringSubmatch(s); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n > 100000 {
+			return 0, bad
+		}
+		total = time.Duration(n) * 24 * time.Hour
+		s = s[len(m[0]):]
 	}
-	return d, nil
+	if s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, bad
+		}
+		total += d
+	}
+	return total, nil
 }
+
+// PollInterval is how often the resolver polls. Default 60s, at least 15s.
+func (c *Config) PollInterval() time.Duration { return c.pollInterval }
 
 // Thresholds are the rules thresholds, defaults filled in.
 func (c *Config) Thresholds() rules.Thresholds { return c.thresholds }
