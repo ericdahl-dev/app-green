@@ -35,8 +35,12 @@ func (r *Resolver) Approve(ctx context.Context, env model.Env, token string, ok 
 }
 
 // Rerun re-runs the failed jobs of GitHub Actions run runID in repo
-// ("owner/name"), from a failing check's Check.RunID.
+// ("owner/name"), from a failing check's Check.RunID. A runID of 0 or less
+// (a check that is not an Actions run) is refused without calling GitHub.
 func (r *Resolver) Rerun(ctx context.Context, repo string, runID int64) error {
+	if runID <= 0 {
+		return fmt.Errorf("rerun in %s: check has no GitHub Actions run to re-run", repo)
+	}
 	return r.refreshed(r.ad.Code.RerunFailedJobs(ctx, repo, runID))
 }
 

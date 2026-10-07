@@ -253,6 +253,7 @@ type fakeDeployer struct {
 	mu           sync.Mutex
 	sources      map[string]map[string]string // by pipeline
 	sourcesCalls int
+	sourcesErr   error                                // when set, Sources fails with it (histErr also fails it)
 	hist         map[string]map[string][]model.Deploy // by pipeline, then stage
 	histWarn     []string
 	histErr      error
@@ -285,6 +286,9 @@ func (f *fakeDeployer) Sources(_ context.Context, pipeline string) (map[string]s
 	f.sourcesCalls++
 	if f.histErr != nil {
 		return nil, f.histErr
+	}
+	if f.sourcesErr != nil {
+		return nil, f.sourcesErr
 	}
 	src, ok := f.sources[pipeline]
 	if !ok {

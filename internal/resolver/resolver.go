@@ -281,7 +281,7 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 	githubRan := run("github", func() { gr = r.fetchGitHub(ctx, watched, now) })
 	acctRan := make([]bool, len(accts))
 	for i, a := range accts {
-		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, ask) })
+		acctRan[i] = run("aws "+a, func() { ars[i] = r.fetchAccount(ctx, a, ask, known) })
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
@@ -431,10 +431,13 @@ func (r *Resolver) fetchRepo(ctx context.Context, full string, now time.Time) (r
 
 // fetchAccount reads one account: per pipeline, its sources (once per
 // session) and one History call for all its envs' stages, then each env's
-// health. A failing call keeps that pipeline's or env's previous data and
-// the rest go on, except that an expired SSO session or throttling stops
-// the account: every later call would fail the same way.
-func (r *Resolver) fetchAccount(ctx context.Context, account string, known map[config.PipelineKey]map[string]string) accountResult {
+// health. Sources is asked for pipelines missing from ask; cached holds
+// every pipeline's previous sources. A failing call keeps that pipeline's or
+// env's previous data and the rest go on, except that an expired SSO session
+// or throttling stops the account: every later call would fail the same
+// way. A pipeline asked again after a refresh whose Sources call fails
+// otherwise reads its history with its cached sources, with a warning.
+func (r *Resolver) fetchAccount(ctx context.Context, account string, ask, cached map[config.PipelineKey]map[string]string) accountResult {
 	res := accountResult{
 		sources:   map[config.PipelineKey]map[string]string{},
 		pipelines: map[config.PipelineKey]pipelineData{},
@@ -456,16 +459,24 @@ func (r *Resolver) fetchAccount(ctx context.Context, account string, known map[c
 		if ps.Key.Account != account {
 			continue
 		}
-		src, ok := known[ps.Key]
+		var fallback string // a warning when the cached sources stand in
+		src, ok := ask[ps.Key]
 		if !ok {
-			var err error
-			if src, err = d.Sources(ctx, ps.Key.Pipeline); err != nil {
+			fresh, err := d.Sources(ctx, ps.Key.Pipeline)
+			old, hadOld := cached[ps.Key]
+			switch {
+			case err == nil:
+				src = fresh
+				res.sources[ps.Key] = src
+			case aws.IsSSOExpired(err) || aws.IsThrottled(err) || !hadOld:
 				if fail(err) {
 					return res
 				}
 				continue
+			default:
+				src = old
+				fallback = short(fmt.Sprintf("aws %s %s: using cached sources: %v", account, ps.Key.Pipeline, err))
 			}
-			res.sources[ps.Key] = src
 		}
 		deploys, warn, err := d.History(ctx, ps.Key.Pipeline, src, ps.Specs...)
 		if err != nil {
@@ -473,6 +484,9 @@ func (r *Resolver) fetchAccount(ctx context.Context, account string, known map[c
 				return res
 			}
 			continue
+		}
+		if fallback != "" {
+			warn = append(slices.Clone(warn), fallback)
 		}
 		res.pipelines[ps.Key] = pipelineData{deploys: deploys, warn: warn}
 	}
@@ -617,6 +631,8 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	}
 
 	chains, unlinked := link.Link(tickets, prs, bases, r.cfg.Jira.Projects)
+	// Read before compares, which can stop GitHub mid-build.
+	githubFresh := r.status["github"].OK && r.status["github"].At.Equal(now)
 	r.cache.next()
 	defer r.cache.sweep()
 	// Compares run one at a time, here, after the fetches: the first poll
@@ -657,7 +673,7 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	for i := range chains {
 		chains[i] = link.Slots(chains[i], histories, cmp)
 		markUndiscovered(&chains[i], undiscovered)
-		markStale(&chains[i], repoAt, envAt, now)
+		markStale(&chains[i], repoAt, envAt, githubFresh, now)
 	}
 
 	status := make([]AdapterStatus, len(r.order))
@@ -677,9 +693,15 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 
 // markStale sets c.Stale when an input of c did not load this poll (it
 // failed, was skipped, or never loaded): a repo one of c's PRs comes from,
-// or an env whose slot applies. repoAt is keyed by watched repo, and PR.Repo
+// or an env whose slot applies. A chain with no PRs is stale when GitHub
+// failed or was skipped this poll (githubFresh false): nobody can tell
+// whether a PR for it exists. repoAt is keyed by watched repo, and PR.Repo
 // matches it ignoring case; envAt is keyed by Env.ID().
-func markStale(c *model.Chain, repoAt, envAt map[string]time.Time, now time.Time) {
+func markStale(c *model.Chain, repoAt, envAt map[string]time.Time, githubFresh bool, now time.Time) {
+	if len(c.PRs) == 0 && !githubFresh {
+		c.Stale, c.StaleReason = true, "GitHub not refreshed"
+		return
+	}
 	for _, p := range c.PRs {
 		at, ok := lookupFold(repoAt, p.Repo)
 		if !ok || !at.Equal(now) {
