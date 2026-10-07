@@ -151,6 +151,7 @@ type Resolver struct {
 	recheck    map[config.PipelineKey]bool              // cached sources a refresh wants asked again
 	pipelines  map[config.PipelineKey]pipelineData
 	health     map[string]healthData // by Env.ID()
+	warned     map[string]bool       // the last poll's warnings, so only new ones are logged
 }
 
 // New returns a Resolver over ad. now is the clock (nil is time.Now); log
@@ -330,9 +331,14 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 		r.record("aws "+a, ar.err, now)
 	}
 	snap := r.build(ctx, now)
+	current := make(map[string]bool, len(snap.Warnings))
 	for _, w := range snap.Warnings {
-		r.log.Warn("poll warning", "msg", w)
+		current[w] = true
+		if !r.warned[w] { // a warning that persists is logged once, not every poll
+			r.log.Warn("poll warning", "msg", w)
+		}
 	}
+	r.warned = current
 	return snap
 }
 
