@@ -34,10 +34,10 @@ Four reviewers (architecture, backend/API, UX, scope) checked the first draft
 against the sibling repos and live read-only AWS calls. Confirmed by hand:
 
 - Each work account runs one app pipeline with stages Source →
-  ClusterCreation → Test (Deploy, SmokeTests, ManualApprovalOfTestEnvironment)
+  Provision → Test (Deploy, Smoke, ApproveTest)
   → Production. Test and prod are stages, not separate pipelines.
-- Each pipeline has three GitHub sources: AppCode (app), InfraCode
-  (infra), ReportsCode (reports).
+- Each pipeline has three GitHub sources: AppSource (app), InfraSource
+  (infra), ReportsSource (reports).
 - git-green lists only open PRs (50, no pagination) and has no merge SHAs,
   branch names or compare, so it cannot supply ticket → PR data.
 

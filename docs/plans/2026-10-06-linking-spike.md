@@ -13,13 +13,13 @@ purpose (fixtures are synthetic only).
 |---|---|
 | Ticket → PR by key | Every recent merged PR has the key in both title and branch (`ABC-2099: ...`, `abc-2099-...`) |
 | Merge style | Squash, merge and rebase are all allowed. Each merged PR has a distinct `mergeCommit.oid` |
-| Does the pipeline record the deployed commit? | Yes. `ListPipelineExecutions.sourceRevisions[actionName=AppCode].revisionId` is the PR's merge commit, exactly |
+| Does the pipeline record the deployed commit? | Yes. `ListPipelineExecutions.sourceRevisions[actionName=AppSource].revisionId` is the PR's merge commit, exactly |
 | One run per merge? | Yes, in both accounts. Each merge to `main` starts a V2 execution in each account at the same moment |
-| Stage history | `ListActionExecutions` gives Test/Deploy, Test/ManualApprovalOfTestEnvironment and Production/deploy per execution, with status and `lastUpdateTime` |
+| Stage history | `ListActionExecutions` gives Test/Deploy, Test/ApproveTest and Production/deploy per execution, with status and `lastUpdateTime` |
 | Compare, included | `compare/<mergeSHA>...<deployedSHA>` → `ahead` when the PR is in the deploy |
 | Compare, not yet | Reversed pair → `behind` |
 | Superseded execution | Its merge commit compares `ahead` against the next succeeded execution's commit, so it still resolves as deployed |
-| Other sources | Infra-only changes start runs that redeploy the same AppCode SHA. Harmless: the SHA is already linked |
+| Other sources | Infra-only changes start runs that redeploy the same AppSource SHA. Harmless: the SHA is already linked |
 | Rollbacks | None in the last 100 executions of either account. Covered by synthetic fixtures only |
 | Failed / canceled runs | Present (mostly in stage-acct). Need a red flag only when the failed run carries a commit from a live Chain |
 
