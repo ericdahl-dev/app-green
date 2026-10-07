@@ -23,7 +23,7 @@ func (m App) View() string {
 	if width <= 0 {
 		width = defaultWidth
 	}
-	if m.detail != "" {
+	if m.detail != "" && m.snap != nil { // the detail only opens from a snapshot
 		return m.detailView(width)
 	}
 	now := m.now()

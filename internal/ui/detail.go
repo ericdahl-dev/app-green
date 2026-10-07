@@ -159,7 +159,7 @@ func detailTarget(c model.Chain, i int) string {
 // When the detail is taller than the screen it scrolls; the header and
 // footer stay put.
 func (m App) detailView(width int) string {
-	body, _ := m.detailBody(width)
+	body := m.detailBody(width)
 	if budget := m.bodyHeight(); budget >= 0 && len(body) > budget {
 		body = body[m.doffset:min(m.doffset+budget, len(body))]
 	}
@@ -167,10 +167,9 @@ func (m App) detailView(width int) string {
 	return strings.Join(append(lines, m.footer(detailKeys, width)), "\n")
 }
 
-// detailBody is the detail screen's lines, each width cells, and the index
-// of the selected item's line (-1 with nothing to select): the ticket line,
-// the stale line, one line per PR and per applying env, then the flags.
-func (m App) detailBody(width int) ([]string, int) {
+// detailBody is the detail screen's lines, each width cells: the ticket
+// line, the stale line, one line per PR and per applying env, then the flags.
+func (m App) detailBody(width int) []string {
 	c, _ := m.chain(m.detail)
 	now := m.now()
 	body := []string{ticketLine(c, width)}
@@ -185,7 +184,6 @@ func (m App) detailBody(width int) ([]string, int) {
 			stageW = max(stageW, ansi.StringWidth(clean(it.slot.Env.Stage)))
 		}
 	}
-	sel := -1
 	for i, it := range items {
 		var line string
 		if it.slot != nil {
@@ -195,7 +193,7 @@ func (m App) detailBody(width int) ([]string, int) {
 		}
 		line = fit(line, width)
 		if i == m.dsel {
-			sel, line = len(body), m.styles.selected(line)
+			line = m.styles.selected(line)
 		}
 		body = append(body, line)
 	}
@@ -205,14 +203,14 @@ func (m App) detailBody(width int) ([]string, int) {
 			body = append(body, fit("  "+m.styles.marker(f.Level)+" "+clean(f.Reason), width))
 		}
 	}
-	return body, sel
+	return body
 }
 
 // showSelection scrolls the detail just enough to show the selected line,
 // and to the top on the first item so the ticket line shows.
 func (m App) showSelection() App {
 	budget := m.bodyHeight()
-	_, sel := m.detailBody(defaultWidth)
+	sel := m.selectedLine()
 	switch {
 	case budget < 0 || sel < 0:
 	case m.dsel == 0:
@@ -225,9 +223,23 @@ func (m App) showSelection() App {
 	return m
 }
 
+// selectedLine is the index of the selected item's line in the detail body
+// (see detailBody), -1 with nothing to select.
+func (m App) selectedLine() int {
+	c, _ := m.chain(m.detail)
+	if m.dsel >= len(detailItems(c)) {
+		return -1
+	}
+	line := 1 + m.dsel // the ticket line, then the items
+	if c.Stale {
+		line++
+	}
+	return line
+}
+
 // selectionVisible reports whether the selected line is on screen.
 func (m App) selectionVisible() bool {
-	_, sel := m.detailBody(defaultWidth)
+	sel := m.selectedLine()
 	budget := m.bodyHeight()
 	return sel >= 0 && (budget < 0 || sel >= m.doffset && sel < m.doffset+budget)
 }
@@ -239,7 +251,7 @@ func (m App) detailScroll() App {
 		m.doffset = 0
 		return m
 	}
-	body, _ := m.detailBody(defaultWidth)
+	body := m.detailBody(defaultWidth)
 	m.doffset = min(max(m.doffset, 0), max(len(body)-budget, 0))
 	return m
 }
