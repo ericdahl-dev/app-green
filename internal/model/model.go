@@ -300,6 +300,10 @@ type Chain struct {
 	Slots  []EnvSlot // one per configured Env, in Env.Order
 	Stage  Stage
 	Flags  []Flag // ordered; Flags[0] is the row's flag
+	// Stale: some input repo or env for this chain failed this poll or never
+	// loaded, so the row may be behind. StaleReason names the first one.
+	Stale       bool
+	StaleReason string
 }
 
 // Level is the chain's worst flag level, the max over all Flags. Flags[0] is

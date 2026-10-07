@@ -75,6 +75,12 @@ type Snapshot struct {
 	// shown, so a source that failed this poll keeps its last warnings.
 	Warnings []string
 	At       time.Time
+	// RepoAt is when each watched repo last loaded, and EnvAt when each env
+	// (by Env.ID()) last loaded both its history and its health; zero if
+	// never. A time before At means that input failed or was skipped this
+	// poll.
+	RepoAt map[string]time.Time
+	EnvAt  map[string]time.Time
 }
 
 // prSince is how far back RecentPRs looks.
@@ -94,18 +100,21 @@ type repoData struct {
 	prs     []model.PR // mine
 	context []model.PR // base-branch PRs of mine, any author
 	warn    []string
+	at      time.Time // the poll that fetched it
 }
 
 // pipelineData is the last good AWS result for one pipeline.
 type pipelineData struct {
 	deploys map[string][]model.Deploy // by stage
 	warn    []string
+	at      time.Time // the poll that fetched it
 }
 
 // healthData is the last good health of one Env.
 type healthData struct {
 	health model.Health
 	warn   []string
+	at     time.Time // the poll that fetched it
 }
 
 // Resolver polls the adapters and builds Snapshots. Poll and Run are safe
@@ -262,6 +271,7 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 
 	if githubRan {
 		for repo, d := range gr.repos {
+			d.at = now
 			r.repos[repo] = d
 		}
 		r.record("github", gr.err, now)
@@ -290,9 +300,11 @@ func (r *Resolver) Poll(ctx context.Context) Snapshot {
 			r.sources[k] = v
 		}
 		for k, v := range ar.pipelines {
+			v.at = now
 			r.pipelines[k] = v
 		}
 		for k, v := range ar.health {
+			v.at = now
 			r.health[k] = v
 		}
 		r.record("aws "+a, ar.err, now)
@@ -536,15 +548,18 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		}
 	}
 	var prs, bases []model.PR
+	repoAt := map[string]time.Time{}
 	for _, repo := range r.watchedRepos(r.sources) {
 		d := r.repos[repo]
 		prs = append(prs, d.prs...)
 		bases = append(bases, d.context...)
 		warn.add(d.warn...)
+		repoAt[repo] = d.at
 	}
 	var (
 		histories    []model.EnvHistory
 		undiscovered []int // indexes of envs with no config repos and no sources yet
+		envAt        = map[string]time.Time{}
 	)
 	for i, e := range r.cfg.Envs() {
 		k := config.PipelineKey{Account: e.Account, Pipeline: e.Pipeline}
@@ -559,6 +574,7 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		}
 		p := r.pipelines[k]
 		h := r.health[e.ID()]
+		envAt[e.ID()] = earliest(p.at, h.at)
 		warn.add(p.warn...)
 		warn.add(h.warn...)
 		histories = append(histories, model.EnvHistory{Env: e, Deploys: p.deploys[e.Stage], Health: h.health})
@@ -595,6 +611,7 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 	for i := range chains {
 		chains[i] = link.Slots(chains[i], histories, cmp)
 		markUndiscovered(&chains[i], undiscovered)
+		markStale(&chains[i], repoAt, envAt, now)
 	}
 
 	status := make([]AdapterStatus, len(r.order))
@@ -607,7 +624,62 @@ func (r *Resolver) build(ctx context.Context, now time.Time) Snapshot {
 		Status:   status,
 		Warnings: warn.list(),
 		At:       now,
+		RepoAt:   repoAt,
+		EnvAt:    envAt,
 	}
+}
+
+// markStale sets c.Stale when an input of c did not load this poll (it
+// failed, was skipped, or never loaded): a repo one of c's PRs comes from,
+// or an env whose slot applies. repoAt is keyed by watched repo, and PR.Repo
+// matches it ignoring case; envAt is keyed by Env.ID().
+func markStale(c *model.Chain, repoAt, envAt map[string]time.Time, now time.Time) {
+	for _, p := range c.PRs {
+		at, ok := lookupFold(repoAt, p.Repo)
+		if !ok || !at.Equal(now) {
+			c.Stale, c.StaleReason = true, staleReason(p.Repo, at)
+			return
+		}
+	}
+	for _, s := range c.Slots {
+		if at := envAt[s.Env.ID()]; s.Applies && !at.Equal(now) {
+			c.Stale, c.StaleReason = true, staleReason(s.Env.ID(), at)
+			return
+		}
+	}
+}
+
+// earliest is the earlier of a and b; zero if either is.
+func earliest(a, b time.Time) time.Time {
+	if a.IsZero() || b.IsZero() {
+		return time.Time{}
+	}
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// lookupFold is m[key], matching key ignoring case when there is no exact
+// match.
+func lookupFold(m map[string]time.Time, key string) (time.Time, bool) {
+	if v, ok := m[key]; ok {
+		return v, true
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// staleReason says why what (a repo or Env.ID()) is stale.
+func staleReason(what string, at time.Time) string {
+	if at.IsZero() {
+		return what + " never loaded"
+	}
+	return what + " not refreshed since " + at.Format("15:04:05")
 }
 
 // markUndiscovered makes each env in envs (indexes into c.Slots) an
