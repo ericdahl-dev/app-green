@@ -30,8 +30,13 @@ func TestHeaderSegments(t *testing.T) {
 		{"ok with no time", resolver.AdapterStatus{Name: "jira", OK: true}, "jira ✓"},
 		{"token rejected", resolver.AdapterStatus{Name: "github", Err: "token rejected", Auth: true, At: now.Add(-time.Hour)}, "github ✗ token rejected"},
 		{"sso expired", resolver.AdapterStatus{Name: "aws prod-acct", Err: "operation error STS: GetCallerIdentity, token has expired", SSO: true}, "aws prod-acct ✗ sso expired"},
-		{"throttled", resolver.AdapterStatus{Name: "aws stage-acct", Err: "ThrottlingException: Rate exceeded", Throttled: true, RetryAt: now.Add(2*time.Minute + 5*time.Second)}, "aws stage-acct ⏸ throttled 2m"},
-		{"throttled, retry due", resolver.AdapterStatus{Name: "jira", Err: "HTTP 429", Throttled: true, RetryAt: now.Add(-time.Second)}, "jira ⏸ throttled"},
+		{"throttled", resolver.AdapterStatus{Name: "aws stage-acct", Err: "ThrottlingException: Rate exceeded", Throttled: true, RetryAt: now.Add(2*time.Minute + 5*time.Second)}, "aws stage-acct ‖ throttled 3m"},
+		{"throttled, countdown rounds up", resolver.AdapterStatus{Name: "jira", Throttled: true, RetryAt: now.Add(500 * time.Millisecond)}, "jira ‖ throttled 1s"},
+		{"throttled 2m59s", resolver.AdapterStatus{Name: "jira", Throttled: true, RetryAt: now.Add(2*time.Minute + 59*time.Second)}, "jira ‖ throttled 3m"},
+		{"throttled 59.5s", resolver.AdapterStatus{Name: "jira", Throttled: true, RetryAt: now.Add(59*time.Second + 500*time.Millisecond)}, "jira ‖ throttled 1m"},
+		{"throttled exactly 1h", resolver.AdapterStatus{Name: "jira", Throttled: true, RetryAt: now.Add(time.Hour)}, "jira ‖ throttled 1h"},
+		{"throttled 1h1s", resolver.AdapterStatus{Name: "jira", Throttled: true, RetryAt: now.Add(time.Hour + time.Second)}, "jira ‖ throttled 2h"},
+		{"throttled, retry due", resolver.AdapterStatus{Name: "jira", Err: "HTTP 429", Throttled: true, RetryAt: now.Add(-time.Second)}, "jira ‖ throttled"},
 		{"auth beats throttled", resolver.AdapterStatus{Name: "jira", Err: "token rejected", Auth: true, Throttled: true, RetryAt: now.Add(time.Minute)}, "jira ✗ token rejected"},
 		{"sso beats throttled", resolver.AdapterStatus{Name: "aws prod-acct", Err: "expired", SSO: true, Throttled: true, RetryAt: now.Add(time.Minute)}, "aws prod-acct ✗ sso expired"},
 		{"generic error", resolver.AdapterStatus{Name: "jira", Err: "HTTP 502 Bad Gateway"}, "jira ✗ HTTP 502 Bad Gateway"},
@@ -56,7 +61,7 @@ func TestHeaderMixed(t *testing.T) {
 		{Name: "aws stage-acct", Throttled: true, RetryAt: now.Add(2 * time.Minute)},
 		{Name: "aws prod-acct", SSO: true, Err: "expired"},
 	}
-	want := "app-green  jira ✓ 12s  github ✗ token rejected  aws stage-acct ⏸ throttled 2m  aws prod-acct ✗ sso expired"
+	want := "app-green  jira ✓ 12s  github ✗ token rejected  aws stage-acct ‖ throttled 2m  aws prod-acct ✗ sso expired"
 	if got := ui.RenderHeader(st, now, 120); got != want {
 		t.Errorf("header\n got %q\nwant %q", got, want)
 	}

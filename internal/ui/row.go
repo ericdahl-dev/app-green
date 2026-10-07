@@ -2,13 +2,16 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
-// Layout is the column widths shared by every row of the list.
+// Layout is the column widths shared by every row of the list. Build it
+// again with NewLayout for every render: the stage column holds an age
+// ("in prod ✓ 3h ago") whose width changes as time passes.
 type Layout struct {
 	Width      int // the whole row, in cells
 	KeyWidth   int // the longest ticket key
@@ -44,7 +47,9 @@ func RenderRow(c model.Chain, l Layout, now time.Time) string {
 }
 
 // Row renders c as one row exactly l.Width cells wide: marker, key, title,
-// stage, reason and key hint.
+// stage, reason and key hint. When the row is too narrow, the reason and
+// title give way first, then the stage and key are cut; the marker and the
+// hint keep their places down to 7 cells.
 func (s Styles) Row(c model.Chain, l Layout, now time.Time) string {
 	if l.Width <= 0 {
 		return ""
@@ -60,10 +65,16 @@ func (s Styles) Row(c model.Chain, l Layout, now time.Time) string {
 	} else {
 		reasonW += 2 // no title column, so no gap after it
 	}
-	rest := " " + fit(clean(c.Ticket.Key), l.KeyWidth) + "  " + title +
-		fit(stageColumn(c, now), l.StageWidth) + "  " + fit(reason, reasonW) + "  " + fit(RowAction(c).Key(), hintWidth)
-	// Too narrow for every column: cut at the right edge, before styling.
-	rest = fit(rest, l.Width-1)
+	mid := " " + fit(clean(c.Ticket.Key), l.KeyWidth) + "  " + title +
+		fit(stageColumn(c, now), l.StageWidth) + "  " + fit(reason, reasonW)
+	tail := "  " + fit(RowAction(c).Key(), hintWidth)
+	var rest string
+	if avail := l.Width - 1 - ansi.StringWidth(tail); avail >= 1 {
+		// Trim the padding first so a cut ends in text, not "   …".
+		rest = fit(strings.TrimRight(mid, " "), avail) + tail
+	} else {
+		rest = fit(mid+tail, l.Width-1) // too narrow for the hint
+	}
 	if c.Stale {
 		// Dim the marker and the rest separately: wrapping the colored marker
 		// in a faint style would let its reset end the dimming.
@@ -103,7 +114,7 @@ func StageText(c model.Chain, now time.Time) string {
 	case model.StageInTest:
 		return "test ✓"
 	case model.StageAwaitingProd:
-		return "prod ⏸"
+		return "prod ‖"
 	case model.StageInProd:
 		if at := lastProd(c); !at.IsZero() {
 			return "in prod ✓ " + age(now.Sub(at)) + " ago"

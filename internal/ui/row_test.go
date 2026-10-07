@@ -76,7 +76,7 @@ func TestStageText(t *testing.T) {
 		{"PR open with no open PR", model.Chain{Stage: model.StagePROpen}, "PR open"},
 		{"merged", model.Chain{Stage: model.StageMerged}, "merged"},
 		{"in test", model.Chain{Stage: model.StageInTest}, "test ✓"},
-		{"awaiting prod", model.Chain{Stage: model.StageAwaitingProd}, "prod ⏸"},
+		{"awaiting prod", model.Chain{Stage: model.StageAwaitingProd}, "prod ‖"},
 		{"in prod, latest prod deploy", model.Chain{Stage: model.StageInProd, Slots: []model.EnvSlot{
 			testSlot,
 			prodSlot(now.Add(-5*time.Hour), model.SlotDeployed, true),
@@ -110,7 +110,7 @@ func TestRowYellowAwaitingApproval(t *testing.T) {
 		Stage: model.StageAwaitingProd,
 	}
 	c.Flags = []model.Flag{{Level: model.Yellow, Kind: model.FlagAwaitingApproval, Reason: "prod-acct Production awaiting approval", Slot: &c.Slots[0]}}
-	want := "◐ ABC-22  Form opt-outs         prod ⏸        prod-acct Production awaitin…  a/x"
+	want := "◐ ABC-22  Form opt-outs         prod ‖        prod-acct Production awaitin…  a/x"
 	if got := row(t, c, layout); got != want {
 		t.Errorf("row\n got %q\nwant %q", got, want)
 	}
@@ -152,11 +152,10 @@ func TestRowStaleHasTildePrefix(t *testing.T) {
 }
 
 func TestRowStaleIsDimmed(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	defer lipgloss.SetColorProfile(termenv.Ascii)
+	color := terminal(env{"TERM": "xterm-256color"})
 	c := model.Chain{Ticket: ticket("ABC-6", "Dim me"), Stage: model.StageMerged, Stale: true}
 	c.Flags = []model.Flag{{Level: model.Red, Kind: model.FlagStatusMismatch, Reason: "Jira still In Progress, PR merged"}}
-	got := ui.RenderRow(c, layout, now)
+	got := color.Row(c, layout, now)
 	// The marker is red and faint; everything after it is one faint run, so a
 	// reset inside the row cannot end the dimming early.
 	marker, rest, ok := strings.Cut(got, "●\x1b[0m")
@@ -169,7 +168,7 @@ func TestRowStaleIsDimmed(t *testing.T) {
 	}
 
 	c.Stale = false
-	if got := ui.RenderRow(c, layout, now); strings.Contains(got, "\x1b[2m") || strings.Contains(got, ";2m") {
+	if got := color.Row(c, layout, now); strings.Contains(got, "\x1b[2m") || strings.Contains(got, ";2m") {
 		t.Errorf("a fresh row is dimmed: %q", got)
 	}
 }
@@ -217,8 +216,14 @@ func TestRowsAtEveryWidth(t *testing.T) {
 	for w := 0; w <= 120; w++ {
 		l := ui.NewLayout(chains, now, w)
 		for _, c := range chains {
-			if got := ui.RenderRow(c, l, now); ansi.StringWidth(got) != w {
+			got := ui.RenderRow(c, l, now)
+			if ansi.StringWidth(got) != w {
 				t.Fatalf("width %d: row is %d cells: %q", w, ansi.StringWidth(got), got)
+			}
+			// From the marker, a cell of text and the hint column up, the
+			// hint always shows.
+			if k := ui.RowAction(c).Key(); k != "" && w >= 1+1+2+3 && !strings.HasSuffix(strings.TrimRight(got, " "), k) {
+				t.Errorf("width %d: hint %q is cut: %q", w, k, got)
 			}
 		}
 	}
@@ -242,7 +247,14 @@ func TestRowsAtBoardWidth(t *testing.T) {
 func TestRowNarrowCutsAtTheRightEdge(t *testing.T) {
 	chains := board()
 	l := ui.NewLayout(chains, now, 30)
-	want := "● ABC-1     PR #3            …"
+	// The hint stays; the stage keeps its place and the reason is dropped.
+	want := "● ABC-1     PR #3" + strings.Repeat(" ", 8+2) + "f  "
+	if got := ui.RenderRow(chains[0], l, now); got != want {
+		t.Errorf("row\n got %q\nwant %q", got, want)
+	}
+	// Narrower still: the key and stage are cut, never the hint.
+	l = ui.NewLayout(chains, now, 12)
+	want = "● ABC-…  f  "
 	if got := ui.RenderRow(chains[0], l, now); got != want {
 		t.Errorf("row\n got %q\nwant %q", got, want)
 	}

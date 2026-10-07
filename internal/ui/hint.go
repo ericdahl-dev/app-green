@@ -18,24 +18,33 @@ const (
 	ActionStatus         // t: change the Jira status
 )
 
-var actionKeys = [...]string{"", "f", "o", "a/x", "t"}
+// actionUndecided is flagAction's answer for a FlagKind it has no case for;
+// RowAction shows it as ActionNone, and a test fails on it.
+const actionUndecided Action = -1
 
 // Key is the hint shown at the end of the row, "" for ActionNone.
 func (a Action) Key() string {
-	if a < 0 || int(a) >= len(actionKeys) {
-		return ""
+	switch a {
+	case ActionRerun:
+		return "f"
+	case ActionOpen:
+		return "o"
+	case ActionApprove:
+		return "a/x"
+	case ActionStatus:
+		return "t"
 	}
-	return actionKeys[a]
+	return ""
 }
 
 func (a Action) String() string {
 	if a == ActionNone {
 		return "none"
 	}
-	if a < 0 || int(a) >= len(actionKeys) {
-		return fmt.Sprintf("Action(%d)", int(a))
+	if k := a.Key(); k != "" {
+		return k
 	}
-	return actionKeys[a]
+	return fmt.Sprintf("Action(%d)", int(a))
 }
 
 // RowAction is the action a row offers for c.Flags[0], or ActionNone when the
@@ -47,7 +56,7 @@ func RowAction(c model.Chain) Action {
 		return ActionNone
 	}
 	a := flagAction(c.Flags[0])
-	if a == ActionNone {
+	if a == ActionNone || a == actionUndecided {
 		return ActionNone
 	}
 	first := target(c.Flags[0])
@@ -60,31 +69,47 @@ func RowAction(c model.Chain) Action {
 }
 
 // flagAction is the action f alone offers, ActionNone without a target.
+// Every FlagKind has its own case; a kind added later without one gives
+// actionUndecided.
 func flagAction(f model.Flag) Action {
-	switch f.Kind {
-	case model.FlagCheckFailed:
-		if f.PR != nil {
-			return failedCheckAction(f.PR.Failing)
-		}
-	case model.FlagPipelineFailed, model.FlagRolledBack, model.FlagDeployUnknown:
+	slot := func() Action {
 		if f.Slot != nil {
 			return ActionOpen
 		}
-	case model.FlagStranded, model.FlagCheckExpected:
+		return ActionNone
+	}
+	pr := func() Action {
 		if f.PR != nil {
 			return ActionOpen
 		}
-	case model.FlagAwaitingApproval:
-		if s := f.Slot; s != nil {
-			if !s.Env.ReadOnly && s.Deploy != nil && s.Deploy.ApprovalToken != "" {
-				return ActionApprove
-			}
-			return ActionOpen // cannot approve here: open the pipeline console
+		return ActionNone
+	}
+	switch f.Kind {
+	case model.FlagPipelineFailed, model.FlagRolledBack, model.FlagUnhealthy, model.FlagPartialProd:
+		return slot() // open the pipeline
+	case model.FlagDeployUnknown:
+		// A repo no configured Env deploys has no Slot, so no key.
+		return slot()
+	case model.FlagStranded, model.FlagCheckExpected, model.FlagChangesRequested, model.FlagReadyToMerge, model.FlagStaleReview:
+		return pr()
+	case model.FlagCheckFailed:
+		if f.PR == nil {
+			return ActionNone
 		}
+		return failedCheckAction(f.PR)
+	case model.FlagAwaitingApproval:
+		s := f.Slot
+		if s == nil {
+			return ActionNone
+		}
+		if !s.Env.ReadOnly && s.Deploy != nil && s.Deploy.ApprovalToken != "" {
+			return ActionApprove
+		}
+		return ActionOpen // cannot approve here: open the pipeline console
 	case model.FlagStatusMismatch:
 		return ActionStatus
 	}
-	return ActionNone
+	return actionUndecided
 }
 
 // target names what f's action works on: its Env, its PR, or else the ticket.
@@ -98,19 +123,30 @@ func target(f model.Flag) string {
 	return "ticket"
 }
 
-// failedCheckAction is f when any failing check is a re-runnable Actions run
-// (the re-run acts on those; code scanning stays for the detail screen), o
-// when any is code scanning or has a URL to open, else none.
-func failedCheckAction(cs []model.Check) Action {
-	open := false
-	for _, c := range cs {
+// failedCheckAction is f when any failing check of pr is a re-runnable
+// Actions run (the re-run acts on those; code scanning stays for the detail
+// screen). Otherwise it is o when there is a page to open: a failing check's
+// own URL, else ChecksPage(pr). Code scanning and checks outside Actions
+// follow the same rule. With nothing to open it is none.
+func failedCheckAction(pr *model.PR) Action {
+	open := ChecksPage(*pr) != ""
+	for _, c := range pr.Failing {
 		if c.RunID > 0 && !c.CodeScanning {
 			return ActionRerun
 		}
-		open = open || c.CodeScanning || c.URL != ""
+		open = open || c.URL != ""
 	}
 	if open {
 		return ActionOpen
 	}
 	return ActionNone
+}
+
+// ChecksPage is the PR's checks tab, "" when the PR's URL is unknown. o opens
+// it for a failing check that has no URL of its own.
+func ChecksPage(pr model.PR) string {
+	if pr.URL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(pr.URL, "/") + "/checks"
 }

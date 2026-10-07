@@ -13,7 +13,14 @@ func TestRowAction(t *testing.T) {
 	external := model.Check{Name: "ci/external"}
 	externalURL := model.Check{Name: "ci/external", URL: "https://ci.example.com/acme/app/1"}
 	failingPR := func(cs ...model.Check) *model.PR {
-		return &model.PR{Number: 3, State: model.PROpen, Checks: model.ChecksFailing, Failing: cs}
+		return &model.PR{Number: 3, URL: "https://github.com/acme/app/pull/3", State: model.PROpen, Checks: model.ChecksFailing, Failing: cs}
+	}
+	// noURL is a failing PR whose URL is unknown, so only a check's own URL
+	// can be opened.
+	noURL := func(cs ...model.Check) *model.PR {
+		p := failingPR(cs...)
+		p.URL = ""
+		return p
 	}
 	waiting := func(readOnly bool, token string) *model.EnvSlot {
 		return &model.EnvSlot{
@@ -37,8 +44,12 @@ func TestRowAction(t *testing.T) {
 		{"code scanning beside a re-runnable check", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR(rspec, codeql)}, ui.ActionRerun, "f"},
 		{"outside Actions beside a re-runnable check", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR(external, rspec)}, ui.ActionRerun, "f"},
 		{"failed check outside Actions with a URL", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR(externalURL)}, ui.ActionOpen, "o"},
-		{"failed check outside Actions", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR(external)}, ui.ActionNone, ""},
-		{"failed check with no details", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR()}, ui.ActionNone, ""},
+		{"failed check outside Actions, no URL: the PR's checks page", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR(external)}, ui.ActionOpen, "o"},
+		{"failed check with no details: the PR's checks page", &model.Flag{Kind: model.FlagCheckFailed, PR: failingPR()}, ui.ActionOpen, "o"},
+		{"failed check outside Actions, nothing to open", &model.Flag{Kind: model.FlagCheckFailed, PR: noURL(external)}, ui.ActionNone, ""},
+		{"code scanning, nothing to open", &model.Flag{Kind: model.FlagCheckFailed, PR: noURL(codeql)}, ui.ActionNone, ""},
+		{"code scanning with its own URL", &model.Flag{Kind: model.FlagCheckFailed, PR: noURL(model.Check{Name: "CodeQL", CodeScanning: true, URL: "https://github.com/acme/app/security/code-scanning/1"})}, ui.ActionOpen, "o"},
+		{"outside Actions with its own URL, PR URL unknown", &model.Flag{Kind: model.FlagCheckFailed, PR: noURL(externalURL)}, ui.ActionOpen, "o"},
 		{"failed check without a PR", &model.Flag{Kind: model.FlagCheckFailed}, ui.ActionNone, ""},
 		{"pipeline failed", &model.Flag{Kind: model.FlagPipelineFailed, Slot: slot}, ui.ActionOpen, "o"},
 		{"rolled back", &model.Flag{Kind: model.FlagRolledBack, Slot: slot}, ui.ActionOpen, "o"},
@@ -53,11 +64,15 @@ func TestRowAction(t *testing.T) {
 		{"awaiting approval, no deploy", &model.Flag{Kind: model.FlagAwaitingApproval, Slot: &model.EnvSlot{State: model.SlotAwaitingApproval}}, ui.ActionOpen, "o"},
 		{"awaiting approval without a slot", &model.Flag{Kind: model.FlagAwaitingApproval}, ui.ActionNone, ""},
 		{"status mismatch", &model.Flag{Kind: model.FlagStatusMismatch}, ui.ActionStatus, "t"},
-		{"unhealthy", &model.Flag{Kind: model.FlagUnhealthy, Slot: slot}, ui.ActionNone, ""},
-		{"changes requested", &model.Flag{Kind: model.FlagChangesRequested, PR: pr}, ui.ActionNone, ""},
-		{"partial prod", &model.Flag{Kind: model.FlagPartialProd, Slot: slot}, ui.ActionNone, ""},
-		{"ready to merge", &model.Flag{Kind: model.FlagReadyToMerge, PR: pr}, ui.ActionNone, ""},
-		{"stale review", &model.Flag{Kind: model.FlagStaleReview, PR: pr}, ui.ActionNone, ""},
+		{"unhealthy", &model.Flag{Kind: model.FlagUnhealthy, Slot: slot}, ui.ActionOpen, "o"},
+		{"unhealthy without a slot", &model.Flag{Kind: model.FlagUnhealthy}, ui.ActionNone, ""},
+		{"changes requested", &model.Flag{Kind: model.FlagChangesRequested, PR: pr}, ui.ActionOpen, "o"},
+		{"changes requested without a PR", &model.Flag{Kind: model.FlagChangesRequested}, ui.ActionNone, ""},
+		{"partial prod", &model.Flag{Kind: model.FlagPartialProd, Slot: slot}, ui.ActionOpen, "o"},
+		{"partial prod without a slot", &model.Flag{Kind: model.FlagPartialProd}, ui.ActionNone, ""},
+		{"ready to merge", &model.Flag{Kind: model.FlagReadyToMerge, PR: pr}, ui.ActionOpen, "o"},
+		{"stale review", &model.Flag{Kind: model.FlagStaleReview, PR: pr}, ui.ActionOpen, "o"},
+		{"stale review without a PR", &model.Flag{Kind: model.FlagStaleReview}, ui.ActionNone, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -135,5 +150,17 @@ func TestRowActionNeedsOneTarget(t *testing.T) {
 				t.Errorf("RowAction = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestChecksPage(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/acme/app/pull/3":  "https://github.com/acme/app/pull/3/checks",
+		"https://github.com/acme/app/pull/3/": "https://github.com/acme/app/pull/3/checks",
+		"":                                    "",
+	} {
+		if got := ui.ChecksPage(model.PR{URL: in}); got != want {
+			t.Errorf("ChecksPage(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

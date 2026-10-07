@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -51,11 +52,26 @@ func (s Styles) header(statuses []resolver.AdapterStatus, now time.Time, ages bo
 	return strings.Join(parts, "  ")
 }
 
+// countdown is d in its largest unit, rounded up so it never reads shorter
+// than the wait: 500ms is 1s, 2m59s is 3m. d must be positive.
+func countdown(d time.Duration) string {
+	up := func(d, unit time.Duration) int64 { return int64((d + unit - 1) / unit) }
+	switch {
+	case d <= 59*time.Second:
+		return fmt.Sprintf("%ds", up(d, time.Second))
+	case d <= 59*time.Minute:
+		return fmt.Sprintf("%dm", up(d, time.Minute))
+	case d <= 23*time.Hour:
+		return fmt.Sprintf("%dh", up(d, time.Hour))
+	}
+	return fmt.Sprintf("%dd", up(d, 24*time.Hour))
+}
+
 // errWidth caps a generic error in the header, in cells.
 const errWidth = 30
 
 // segment is one source's status: "jira ✓ 12s", "github ✗ token rejected",
-// "aws prod-acct ✗ sso expired", "aws stage-acct ⏸ throttled 2m", or
+// "aws prod-acct ✗ sso expired", "aws stage-acct ‖ throttled 2m", or
 // "jira ✗ <error>". A source that has not answered yet shows "…". With ages
 // false an OK source shows no age.
 func (s Styles) segment(st resolver.AdapterStatus, now time.Time, ages bool) string {
@@ -70,9 +86,9 @@ func (s Styles) segment(st resolver.AdapterStatus, now time.Time, ages bool) str
 	case st.SSO:
 		return name + " " + s.red.Render("✗ sso expired")
 	case st.Throttled && now.Before(st.RetryAt):
-		return name + " " + s.yellow.Render("⏸ throttled "+age(st.RetryAt.Sub(now)))
+		return name + " " + s.yellow.Render("‖ throttled "+countdown(st.RetryAt.Sub(now)))
 	case st.Throttled:
-		return name + " " + s.yellow.Render("⏸ throttled")
+		return name + " " + s.yellow.Render("‖ throttled")
 	case st.Err != "":
 		msg, _, _ := strings.Cut(st.Err, "\n")
 		return name + " " + s.red.Render("✗ "+ansi.Truncate(clean(msg), errWidth, "…"))
