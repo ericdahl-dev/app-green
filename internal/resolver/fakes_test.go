@@ -13,6 +13,7 @@ import (
 
 	"github.com/ericdahl-dev/app-green/internal/aws"
 	"github.com/ericdahl-dev/app-green/internal/config"
+	"github.com/ericdahl-dev/app-green/internal/jira"
 	"github.com/ericdahl-dev/app-green/internal/model"
 )
 
@@ -100,6 +101,23 @@ type fakeTracker struct {
 	block      chan struct{} // when set, MyTickets waits for it to close
 	inFlight   int
 	maxFlight  int
+
+	transitions map[string][]jira.Transition // by key
+	moves       [][2]string                  // DoTransition calls: key, transition ID
+	moveErr     error
+}
+
+func (f *fakeTracker) Transitions(_ context.Context, key string) ([]jira.Transition, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.transitions[key]), nil
+}
+
+func (f *fakeTracker) DoTransition(_ context.Context, key, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.moves = append(f.moves, [2]string{key, id})
+	return f.moveErr
 }
 
 func (f *fakeTracker) MyTickets(ctx context.Context, projects []string) ([]model.Ticket, []string, error) {
@@ -163,6 +181,26 @@ type fakeHost struct {
 	baseInputs   map[string][]model.PR
 	compare      func(repo, base, head string) (model.Inclusion, error)
 	compareCalls []compareCall
+	rerunCalls   []rerunCall
+	rerunErr     error
+}
+
+type rerunCall struct {
+	repo  string
+	runID int64
+}
+
+func (f *fakeHost) RerunFailedJobs(_ context.Context, repo string, runID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rerunCalls = append(f.rerunCalls, rerunCall{repo, runID})
+	return f.rerunErr
+}
+
+func (f *fakeHost) reruns() []rerunCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.rerunCalls)
 }
 
 func (f *fakeHost) RecentPRs(_ context.Context, owner, name, _ string, _ time.Time) ([]model.PR, []string, error) {
@@ -224,6 +262,21 @@ type fakeDeployer struct {
 	health       map[string]model.Health // by first service name
 	healthErr    error
 	during       func() // when set, History calls it first (to move the clock mid-poll)
+	approveCalls []approveCall
+	approveErr   error
+}
+
+func (f *fakeDeployer) Approve(_ context.Context, pipeline, stage, action, token string, ok bool, summary string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.approveCalls = append(f.approveCalls, approveCall{pipeline, stage, action, token, ok, summary})
+	return f.approveErr
+}
+
+func (f *fakeDeployer) approvals() []approveCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.approveCalls)
 }
 
 func (f *fakeDeployer) Sources(_ context.Context, pipeline string) (map[string]string, error) {

@@ -113,11 +113,17 @@ type PR struct {
 // Env is one deploy environment: a stage of a pipeline in an account.
 type Env struct {
 	Account  string // config name, e.g. "prod-acct"
+	Region   string // the account's AWS region, e.g. "us-east-1"
 	Pipeline string
 	Stage    string // "Test" | "Production"
 	Order    int    // position in config; higher is further along
 	Prod     bool
 	ReadOnly bool // profile cannot approve
+	// ApprovalStage and ApprovalAction name the manual approval that gates
+	// this Env; both empty when none is configured. ApprovalStage defaults
+	// to Stage when only ApprovalAction is set.
+	ApprovalStage  string
+	ApprovalAction string
 	// Repos are the "owner/name" repos this Env deploys, compared ignoring
 	// case. Required in practice: phase 2 fills it from the pipeline's source
 	// actions. link trusts it over what history shows, and rules uses it to

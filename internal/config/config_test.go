@@ -132,8 +132,11 @@ func TestEnvs(t *testing.T) {
 		t.Fatalf("got %d envs, want 2", len(envs))
 	}
 	want := []model.Env{
-		{Account: "stage-acct", Pipeline: "app-pipeline", Stage: "Test", Order: 0, Repos: []string{"acme/app"}},
-		{Account: "prod-acct", Pipeline: "app-pipeline", Stage: "Production", Order: 1, Prod: true, ReadOnly: true, Repos: []string{"acme/app"}},
+		// approval_stage defaults to the env's own stage.
+		{Account: "stage-acct", Region: "us-east-1", Pipeline: "app-pipeline", Stage: "Test", Order: 0, Repos: []string{"acme/app"},
+			ApprovalStage: "Test", ApprovalAction: "ApproveTest"},
+		{Account: "prod-acct", Region: "us-east-1", Pipeline: "app-pipeline", Stage: "Production", Order: 1, Prod: true, ReadOnly: true, Repos: []string{"acme/app"},
+			ApprovalStage: "Test", ApprovalAction: "ApproveProd"},
 	}
 	for i, w := range want {
 		if !reflect.DeepEqual(envs[i], w) {

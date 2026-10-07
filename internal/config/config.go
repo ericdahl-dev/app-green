@@ -355,7 +355,9 @@ func (c *Config) Account(name string) (Account, bool) {
 }
 
 // Envs are the configured envs as model.Env, in file order: Order is the
-// position in the file and ReadOnly comes from the account.
+// position in the file, Region and ReadOnly come from the account, and the
+// approval fields are the stage spec's (approval_stage defaults to the env's
+// own stage).
 func (c *Config) Envs() []model.Env {
 	out := make([]model.Env, len(c.EnvList))
 	for i := range c.EnvList {
@@ -368,14 +370,18 @@ func (c *Config) Envs() []model.Env {
 func (c *Config) env(i int) model.Env {
 	e := c.EnvList[i]
 	a, _ := c.Account(e.Account)
+	spec := e.stageSpec()
 	return model.Env{
-		Account:  e.Account,
-		Pipeline: e.Pipeline,
-		Stage:    e.Stage,
-		Order:    i,
-		Prod:     e.Prod,
-		ReadOnly: a.ReadOnly,
-		Repos:    slices.Clone(e.Repos),
+		Account:        e.Account,
+		Region:         a.Region,
+		Pipeline:       e.Pipeline,
+		Stage:          e.Stage,
+		Order:          i,
+		Prod:           e.Prod,
+		ReadOnly:       a.ReadOnly,
+		ApprovalStage:  spec.ApprovalStage,
+		ApprovalAction: spec.ApprovalAction,
+		Repos:          slices.Clone(e.Repos),
 	}
 }
 

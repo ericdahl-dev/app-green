@@ -27,6 +27,8 @@ import (
 type Tracker interface {
 	MyTickets(ctx context.Context, projects []string) ([]model.Ticket, []string, error)
 	TicketsByKey(ctx context.Context, keys []string) ([]model.Ticket, []string, error)
+	Transitions(ctx context.Context, key string) ([]jira.Transition, error)
+	DoTransition(ctx context.Context, key, transitionID string) error
 }
 
 // CodeHost is the part of github.Client the resolver uses.
@@ -34,6 +36,7 @@ type CodeHost interface {
 	RecentPRs(ctx context.Context, owner, name, author string, since time.Time) ([]model.PR, []string, error)
 	BasePRs(ctx context.Context, owner, name string, prs []model.PR) ([]model.PR, []string, error)
 	Compare(ctx context.Context, repo, base, head string) (model.Inclusion, error)
+	RerunFailedJobs(ctx context.Context, repo string, runID int64) error
 }
 
 // Deployer is the part of aws.Client (one account) the resolver uses.
@@ -41,6 +44,7 @@ type Deployer interface {
 	Sources(ctx context.Context, pipeline string) (map[string]string, error)
 	History(ctx context.Context, pipeline string, sources map[string]string, specs ...aws.StageSpec) (map[string][]model.Deploy, []string, error)
 	Health(ctx context.Context, services []aws.Service) (model.Health, []string, error)
+	Approve(ctx context.Context, pipeline, stage, action, token string, ok bool, summary string) error
 }
 
 // Adapters are the resolver's sources. AWS is keyed by config account name.
@@ -126,6 +130,7 @@ type Resolver struct {
 	log *slog.Logger
 
 	interval time.Duration
+	kick     chan struct{} // an action asks Run for a poll; buffer of 1
 
 	pollMu sync.Mutex // held for a whole poll; guards everything below
 	cache  *compareCache
@@ -154,6 +159,7 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 	r := &Resolver{
 		cfg: cfg, ad: ad, now: now, log: log,
 		interval:  cfg.PollInterval(),
+		kick:      make(chan struct{}, 1),
 		cache:     newCompareCache(),
 		status:    map[string]*AdapterStatus{},
 		repos:     map[string]repoData{},
@@ -176,7 +182,9 @@ func New(cfg *config.Config, ad Adapters, now func() time.Time, log *slog.Logger
 // one at a time: a refresh that arrives during a poll starts the next one
 // as soon as it ends, and the interval restarts after every poll. A refresh
 // also retries, once, a source stopped by a rejected token. Send on
-// refresh without blocking (a buffer of 1 coalesces repeated presses).
+// refresh without blocking (a buffer of 1 coalesces repeated presses). A
+// successful action (Approve, Rerun, Transition) also starts a poll, but
+// not the token retry: it is a re-read after a change, not the user asking.
 func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan struct{}) {
 	timer := time.NewTimer(r.interval)
 	defer timer.Stop()
@@ -195,6 +203,7 @@ func (r *Resolver) Run(ctx context.Context, out chan<- Snapshot, refresh <-chan 
 		case <-timer.C:
 		case <-refresh:
 			r.clearAuth()
+		case <-r.kick:
 		case <-ctx.Done():
 			return
 		}
