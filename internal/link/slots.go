@@ -136,7 +136,7 @@ func rank(s model.SlotState) int {
 // never older than the PR's own oldest exact-SHA success (see liveSince). An
 // older exact success does not count when N does not contain the PR (a
 // rollback). Otherwise the newest non-success run that contains the PR decides
-// (failed, in progress, awaiting approval): exact SHA, or by compare for runs
+// (failed or rejected, in progress, awaiting approval): exact SHA, or by compare for runs
 // newer than N. When N does not contain the PR but an older success did (its
 // exact SHA, or else, walking older successes newest to oldest, the first one
 // whose compare says Included: a batched deploy), the slot is RolledBack
@@ -210,7 +210,8 @@ func slotFor(p model.PR, h model.EnvHistory, cmp model.CompareFunc) model.EnvSlo
 	if pending != nil {
 		s.Deploy, s.At, s.SHA = pending, pending.FinishedAt, revision(pending.Revisions, p.Repo)
 		switch pending.Status {
-		case model.DeployFailed:
+		case model.DeployFailed, model.DeployRejected:
+			// A rejected approval stops the run like a failure; rules names it.
 			s.State = model.SlotFailed
 		case model.DeployAwaitingApproval:
 			s.State = model.SlotAwaitingApproval

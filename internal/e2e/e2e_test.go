@@ -85,7 +85,14 @@ func everywhere() []model.EnvHistory {
 // is false when Evaluate dropped it.
 func run(t *testing.T, ticket model.Ticket, prs []model.PR, hs []model.EnvHistory) (row model.Chain, ok bool) {
 	t.Helper()
-	chains, unlinked := link.Link([]model.Ticket{ticket}, prs, []string{"ABC"})
+	return runWith(t, ticket, prs, nil, hs)
+}
+
+// runWith is run with context PRs: base-branch PRs used only for stack
+// walking, as the GitHub adapter's BasePRs returns them.
+func runWith(t *testing.T, ticket model.Ticket, prs, context []model.PR, hs []model.EnvHistory) (row model.Chain, ok bool) {
+	t.Helper()
+	chains, unlinked := link.Link([]model.Ticket{ticket}, prs, context, []string{"ABC"})
 	if len(chains) != 1 || len(unlinked) != 0 {
 		t.Fatalf("link: chains %d, unlinked %d, want 1 and 0", len(chains), len(unlinked))
 	}
@@ -197,6 +204,25 @@ func TestStackedSeriesLandedIsInProd(t *testing.T) {
 	want(t, c, model.StageInProd, model.None, -1)
 }
 
+func TestStackOnSomeoneElsesBaseIsInProd(t *testing.T) {
+	// My #2 merged into s1; someone else's #1 (context, naming my key too)
+	// then merged s1 into main as b, which is deployed everywhere.
+	mine := []model.PR{merged(2, "s2", "s1", "q", now.Add(-12*time.Hour))}
+	theirs := merged(1, "s1", "main", "b", now.Add(-10*time.Hour))
+	hs := everywhere()
+	for i := range hs {
+		hs[i].Deploys = append([]model.Deploy{ok("b", now.Add(-time.Duration(6+i)*time.Hour))}, hs[i].Deploys...)
+	}
+	c, ok := runWith(t, done, mine, []model.PR{theirs}, hs)
+	if !ok {
+		t.Fatal("row dropped, want it kept inside FadeAfter")
+	}
+	want(t, c, model.StageInProd, model.None, -1)
+	if len(c.PRs) != 1 || c.PRs[0].Number != 2 {
+		t.Errorf("row PRs = %+v, want only my #2", c.PRs)
+	}
+}
+
 func TestStrandedStackPRIsRed(t *testing.T) {
 	// #1 merged s1 into main as a; #2 merged into s1 an hour later, so its
 	// commits never reach main.
@@ -227,5 +253,15 @@ func TestRepoCaseMismatchStillApplies(t *testing.T) {
 		if !s.Applies {
 			t.Errorf("%s does not apply, want every Env to apply despite the repo's case", s.Env.ID())
 		}
+	}
+}
+
+func TestRejectedApprovalInOneAccountIsRed(t *testing.T) {
+	hs := everywhere()
+	hs[3].Deploys = []model.Deploy{deploy(model.DeployRejected, "a", now.Add(-30*time.Minute)), ok("z", now.Add(-45*time.Hour))}
+	c, _ := run(t, done, []model.PR{squash}, hs)
+	want(t, c, model.StageAwaitingProd, model.Red, model.FlagPipelineFailed)
+	if f := c.Flags[0]; f.Reason != "prod-acct Production approval rejected or expired" || f.Slot == nil || f.Slot.Env.ID() != prodProd.ID() {
+		t.Errorf("flag %+v, want it on prod-acct Production saying the approval was rejected", f)
 	}
 }

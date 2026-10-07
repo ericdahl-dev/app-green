@@ -1,0 +1,28 @@
+# Durations with day units.
+[settings]
+  stale_review_after = "2d"
+  fade_after = "1d12h"
+  partial_prod_after = "90m"
+  poll_interval = "30s"
+
+[jira]
+  site = "https://example.atlassian.net"
+  email = "me@example.com"
+  token_command = "echo tok"
+  projects = ["ABC", "XY_2"]
+
+[github]
+  author = "me"
+  token_command = "echo tok"
+  repos = ["acme/app"]
+
+[[aws.accounts]]
+  name = "stage-acct"
+  profile = "stage"
+  region = "us-east-1"
+
+[[envs]]
+  account = "stage-acct"
+  pipeline = "app-pipeline"
+  stage = "Test"
+  deploy_action = "Deploy"

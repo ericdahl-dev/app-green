@@ -541,3 +541,35 @@ func TestSlotBatchedRollbackWalkStopsAtUnknown(t *testing.T) {
 		t.Errorf("slot = %+v, want unknown", s)
 	}
 }
+
+func TestSlotRejectedApprovalIsFailed(t *testing.T) {
+	h := model.EnvHistory{Env: prod, Deploys: []model.Deploy{
+		dep(model.DeployRejected, "aaaa", t0),
+		dep(model.DeploySucceeded, "zzzz", t0.Add(-time.Hour)),
+	}}
+	cmp := func(_, _, _ string) model.Inclusion { return model.NotIncluded }
+	s := link.Slot([]model.PR{merged("aaaa")}, h, cmp)
+	if s.State != model.SlotFailed || s.Deploy == nil || s.Deploy.Status != model.DeployRejected || !s.At.Equal(t0) {
+		t.Errorf("slot = %+v, want failed on the rejected run", s)
+	}
+}
+
+func TestSlotNewerRunSupersedesRejection(t *testing.T) {
+	// aaaa's run was rejected at the approval; a newer run of bbbb, which
+	// contains aaaa, now waits there.
+	h := model.EnvHistory{Env: prod, Deploys: []model.Deploy{
+		dep(model.DeployAwaitingApproval, "bbbb", t0),
+		dep(model.DeployRejected, "aaaa", t0.Add(-2*time.Hour)),
+		dep(model.DeploySucceeded, "zzzz", t0.Add(-3*time.Hour)),
+	}}
+	cmp := func(_, base, head string) model.Inclusion {
+		if base == "aaaa" && head == "bbbb" {
+			return model.Included
+		}
+		return model.NotIncluded
+	}
+	s := link.Slot([]model.PR{merged("aaaa")}, h, cmp)
+	if s.State != model.SlotAwaitingApproval || s.Deploy == nil || s.Deploy.Revisions["acme/app"] != "bbbb" {
+		t.Errorf("slot = %+v, want awaiting approval on the bbbb run", s)
+	}
+}

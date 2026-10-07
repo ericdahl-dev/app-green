@@ -1,0 +1,337 @@
+package aws
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline/types"
+
+	"github.com/ericdahl-dev/app-green/internal/model"
+)
+
+// StageSpec names one Env's stage in a pipeline. Action names are matched
+// exactly (CodePipeline names are case-sensitive).
+type StageSpec struct {
+	Stage        string // "Production"
+	DeployAction string // the action whose status is the Env's deploy status
+	// ApprovalStage and ApprovalAction name the manual approval that gates
+	// this stage, which may sit at the end of the previous stage. Empty when
+	// no approval gates it.
+	ApprovalStage  string
+	ApprovalAction string
+}
+
+// maxExecutions is how many pipeline executions one History call reads.
+const maxExecutions = 50
+
+// maxActionPages bounds ListActionExecutions paging. With no execution
+// filter it lists every action of every run (about nine per run in a
+// Source → Test → Production pipeline), so 100 per page covers about eleven
+// runs; ten pages cover the execution window with room to spare.
+const maxActionPages = 10
+
+// History returns each spec's deploys, keyed by StageSpec.Stage, newest
+// first. sources is the repo → source action map from Sources. An execution
+// that has not run the spec's deploy action but waits at its approval action
+// is a DeployAwaitingApproval deploy carrying the approval token. A warning
+// means the history is usable but incomplete.
+//
+// Between the approval succeeding and the gated deploy action starting, the
+// run has neither a waiting approval nor a deploy in that stage, so for that
+// moment (usually seconds) it is absent and the Env shows NotYet for it; the
+// next poll sees the deploy InProgress.
+func (c *Client) History(ctx context.Context, pipeline string, sources map[string]string, specs ...StageSpec) (map[string][]model.Deploy, []string, error) {
+	execList, err := c.cp.ListPipelineExecutions(ctx, &codepipeline.ListPipelineExecutionsInput{
+		PipelineName: awssdk.String(pipeline),
+		MaxResults:   awssdk.Int32(maxExecutions),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("aws: ListPipelineExecutions %s: %w", pipeline, err)
+	}
+	acts, truncated, err := c.actionExecutions(ctx, pipeline, oldestStart(execList.PipelineExecutionSummaries))
+	if err != nil {
+		return nil, nil, err
+	}
+	execs := executions(execList.PipelineExecutionSummaries, sources)
+
+	var warns []string
+	if truncated {
+		warns = append(warns, fmt.Sprintf("aws: %s: action history truncated at %d pages; older runs omitted", pipeline, maxActionPages))
+	}
+	var state *codepipeline.GetPipelineStateOutput // fetched once, on the first pending approval
+	out := map[string][]model.Deploy{}
+	for _, spec := range specs {
+		deploys, pending := stageDeploys(spec, acts, execs)
+		warns = append(warns, unmatched(pipeline, spec, acts)...)
+		for _, p := range pending {
+			if state == nil {
+				// Only the token comes from here: on failure keep the history
+				// and show the approval without one.
+				state, err = c.cp.GetPipelineState(ctx, &codepipeline.GetPipelineStateInput{Name: awssdk.String(pipeline)})
+				if err != nil {
+					warns = append(warns, fmt.Sprintf("aws: GetPipelineState %s: %v", pipeline, err))
+					state = &codepipeline.GetPipelineStateOutput{}
+				}
+			}
+			d := model.Deploy{
+				ExecutionID:   awssdk.ToString(p.PipelineExecutionId),
+				Status:        model.DeployAwaitingApproval,
+				Revisions:     maps.Clone(execs[awssdk.ToString(p.PipelineExecutionId)].revs),
+				FinishedAt:    awssdk.ToTime(p.LastUpdateTime),
+				ApprovalToken: approvalToken(state, p),
+			}
+			if d.ApprovalToken == "" {
+				warns = append(warns, fmt.Sprintf("aws: %s: no approval token for %s/%s in execution %s", pipeline, spec.ApprovalStage, spec.ApprovalAction, d.ExecutionID))
+			}
+			deploys = append(deploys, d)
+		}
+		sortNewestFirst(deploys)
+		out[spec.Stage] = deploys
+	}
+	return out, warns, nil
+}
+
+// unmatched warns about a spec action that no action in the window has: a
+// misnamed action in config, since across a window of recent runs each
+// action has normally run at least once. Names are case-sensitive. An empty window warns about nothing.
+func unmatched(pipeline string, spec StageSpec, acts []types.ActionExecutionDetail) []string {
+	if len(acts) == 0 {
+		return nil
+	}
+	pairs := [][2]string{{spec.Stage, spec.DeployAction}}
+	if spec.ApprovalAction != "" {
+		pairs = append(pairs, [2]string{spec.ApprovalStage, spec.ApprovalAction})
+	}
+	var warns []string
+	for _, p := range pairs {
+		if !slices.ContainsFunc(acts, func(a types.ActionExecutionDetail) bool {
+			return awssdk.ToString(a.StageName) == p[0] && awssdk.ToString(a.ActionName) == p[1]
+		}) {
+			warns = append(warns, fmt.Sprintf("aws: %s: spec %s/%s matched no actions", pipeline, p[0], p[1]))
+		}
+	}
+	return warns
+}
+
+// actionExecutions lists the pipeline's action executions, paging until AWS
+// has no more, a page reaches actions that started before oldest (the oldest
+// execution in the window; zero means unknown), or maxActionPages. AWS lists
+// them newest first by start time (checked against a real pipeline: no
+// inversions in 100), which is what makes the early stop safe. truncated
+// reports that the page cap ended the listing with more runs in the window.
+func (c *Client) actionExecutions(ctx context.Context, pipeline string, oldest time.Time) (acts []types.ActionExecutionDetail, truncated bool, err error) {
+	var all []types.ActionExecutionDetail
+	var next *string
+	for range maxActionPages {
+		out, err := c.cp.ListActionExecutions(ctx, &codepipeline.ListActionExecutionsInput{
+			PipelineName: awssdk.String(pipeline),
+			MaxResults:   awssdk.Int32(100),
+			NextToken:    next,
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("aws: ListActionExecutions %s: %w", pipeline, err)
+		}
+		all = append(all, out.ActionExecutionDetails...)
+		if out.NextToken == nil || pastWindow(out.ActionExecutionDetails, oldest) {
+			return all, false, nil
+		}
+		next = out.NextToken
+	}
+	return all, true, nil
+}
+
+// pastWindow reports whether page holds an action that started before
+// oldest, so later pages hold only runs older than the execution window.
+func pastWindow(page []types.ActionExecutionDetail, oldest time.Time) bool {
+	if oldest.IsZero() {
+		return false
+	}
+	for _, a := range page {
+		if a.StartTime != nil && a.StartTime.Before(oldest) {
+			return true
+		}
+	}
+	return false
+}
+
+// oldestStart is the earliest StartTime among summaries, zero if any is
+// missing one.
+func oldestStart(summaries []types.PipelineExecutionSummary) time.Time {
+	var oldest time.Time
+	for _, e := range summaries {
+		if e.StartTime == nil {
+			return time.Time{}
+		}
+		if oldest.IsZero() || e.StartTime.Before(oldest) {
+			oldest = *e.StartTime
+		}
+	}
+	return oldest
+}
+
+// stageDeploys returns spec's deploys from its deploy action's executions
+// (one per execution, the latest attempt), and the approval action
+// executions still waiting for a run that has not reached the deploy action.
+// A run whose latest approval attempt failed (was rejected) and that has not
+// reached the deploy action is a DeployRejected deploy.
+// Runs outside the window are dropped. An ended run (superseded, canceled,
+// stopped) keeps the actions that finished and drops those still showing
+// InProgress: they never will finish. A superseded run never reached the
+// approval (checked against a real pipeline: superseded runs list no approval
+// action), so supersession cannot produce a false Rejected.
+func stageDeploys(spec StageSpec, acts []types.ActionExecutionDetail, execs map[string]execution) ([]model.Deploy, []types.ActionExecutionDetail) {
+	deploys := []model.Deploy{}
+	deployed := map[string]int{}                          // execution ID → index in deploys
+	approvals := map[string]types.ActionExecutionDetail{} // execution ID → latest approval attempt
+	var approvalIDs []string                              // in listing order, for stable output
+	for _, a := range acts {
+		id := awssdk.ToString(a.PipelineExecutionId)
+		e, known := execs[id]
+		if !known || (!e.active && a.Status == types.ActionExecutionStatusInProgress) {
+			continue
+		}
+		stage, action := awssdk.ToString(a.StageName), awssdk.ToString(a.ActionName)
+		switch {
+		case stage == spec.Stage && action == spec.DeployAction:
+			status, ok := deployStatus(a.Status)
+			if !ok {
+				continue
+			}
+			d := model.Deploy{
+				ExecutionID: id,
+				Status:      status,
+				Revisions:   maps.Clone(e.revs),
+				FinishedAt:  awssdk.ToTime(a.LastUpdateTime),
+			}
+			// A stage retry re-runs the action under the same execution:
+			// keep the latest attempt.
+			if i, seen := deployed[id]; seen {
+				if d.FinishedAt.After(deploys[i].FinishedAt) {
+					deploys[i] = d
+				}
+				continue
+			}
+			deployed[id] = len(deploys)
+			deploys = append(deploys, d)
+		case spec.ApprovalAction != "" && stage == spec.ApprovalStage && action == spec.ApprovalAction:
+			prev, seen := approvals[id]
+			if !seen {
+				approvalIDs = append(approvalIDs, id)
+			}
+			if !seen || awssdk.ToTime(a.LastUpdateTime).After(awssdk.ToTime(prev.LastUpdateTime)) {
+				approvals[id] = a
+			}
+		}
+	}
+	var pending []types.ActionExecutionDetail
+	for _, id := range approvalIDs {
+		a := approvals[id]
+		if _, ok := deployed[id]; ok {
+			continue
+		}
+		switch a.Status {
+		case types.ActionExecutionStatusInProgress:
+			pending = append(pending, a)
+		case types.ActionExecutionStatusFailed:
+			// CodePipeline has no Rejected status: a rejected (or timed
+			// out) manual approval is a Failed action execution.
+			deploys = append(deploys, model.Deploy{
+				ExecutionID: id,
+				Status:      model.DeployRejected,
+				Revisions:   maps.Clone(execs[id].revs),
+				FinishedAt:  awssdk.ToTime(a.LastUpdateTime),
+			})
+		}
+	}
+	return deploys, pending
+}
+
+// approvalToken finds the token for the waiting approval a in the pipeline's
+// current state. Only the approval that is waiting right now has one. The
+// state's action execution ID ties it to a; when AWS leaves that ID out, the
+// stage's current execution must be a's.
+func approvalToken(state *codepipeline.GetPipelineStateOutput, a types.ActionExecutionDetail) string {
+	for _, st := range state.StageStates {
+		if awssdk.ToString(st.StageName) != awssdk.ToString(a.StageName) {
+			continue
+		}
+		for _, as := range st.ActionStates {
+			le := as.LatestExecution
+			if awssdk.ToString(as.ActionName) != awssdk.ToString(a.ActionName) || le == nil ||
+				le.Status != types.ActionExecutionStatusInProgress {
+				continue
+			}
+			if id := awssdk.ToString(le.ActionExecutionId); id != "" {
+				if id == awssdk.ToString(a.ActionExecutionId) {
+					return awssdk.ToString(le.Token)
+				}
+				continue
+			}
+			if st.LatestExecution != nil && awssdk.ToString(st.LatestExecution.PipelineExecutionId) == awssdk.ToString(a.PipelineExecutionId) {
+				return awssdk.ToString(le.Token)
+			}
+		}
+	}
+	return ""
+}
+
+// execution is what History needs from one pipeline execution.
+type execution struct {
+	revs   map[string]string // repo → SHA
+	active bool              // still running: its InProgress actions may finish
+}
+
+// executions maps each execution ID to the commits it carries, using sources
+// (repo → source action) inverted. A source action no repo maps to is
+// ignored, and a repo with no revision is left out.
+func executions(summaries []types.PipelineExecutionSummary, sources map[string]string) map[string]execution {
+	repoOf := make(map[string]string, len(sources))
+	for repo, action := range sources {
+		repoOf[action] = strings.ToLower(repo)
+	}
+	out := make(map[string]execution, len(summaries))
+	for _, e := range summaries {
+		revs := map[string]string{}
+		for _, r := range e.SourceRevisions {
+			repo, ok := repoOf[awssdk.ToString(r.ActionName)]
+			if sha := awssdk.ToString(r.RevisionId); ok && sha != "" {
+				revs[repo] = sha
+			}
+		}
+		active := e.Status == types.PipelineExecutionStatusInProgress || e.Status == types.PipelineExecutionStatusStopping
+		out[awssdk.ToString(e.PipelineExecutionId)] = execution{revs: revs, active: active}
+	}
+	return out
+}
+
+// deployStatus maps an action status to a deploy status. Abandoned and any
+// status AWS adds later report false: they never deployed anything.
+func deployStatus(s types.ActionExecutionStatus) (model.DeployStatus, bool) {
+	switch s {
+	case types.ActionExecutionStatusSucceeded:
+		return model.DeploySucceeded, true
+	case types.ActionExecutionStatusFailed:
+		return model.DeployFailed, true
+	case types.ActionExecutionStatusInProgress:
+		return model.DeployInProgress, true
+	}
+	return "", false
+}
+
+// sortNewestFirst orders deploys by FinishedAt, newest first; ties keep a
+// stable order by execution ID so output does not flicker between polls.
+func sortNewestFirst(deploys []model.Deploy) {
+	slices.SortFunc(deploys, func(a, b model.Deploy) int {
+		if c := b.FinishedAt.Compare(a.FinishedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(b.ExecutionID, a.ExecutionID)
+	})
+}

@@ -14,6 +14,7 @@ import (
 type Thresholds struct {
 	// StaleReview: an open PR with no approval this long after it opened is
 	// yellow (a PR with no reviewer at all is flagged whatever this is).
+	// Draft PRs get neither flag, nor ready to merge.
 	StaleReview time.Duration
 	// DoneGrace: a ticket Done in Jira this long (since StatusSince, else
 	// Updated) without being in prod is yellow.
@@ -41,6 +42,8 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			continue // this Env deploys none of the chain's merged repos
 		}
 		switch {
+		case s.State == model.SlotFailed && s.Deploy != nil && s.Deploy.Status == model.DeployRejected:
+			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s approval rejected or expired", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotFailed:
 			add(model.Red, model.FlagPipelineFailed, fmt.Sprintf("%s %s failed", s.Env.Account, s.Env.Stage), nil, s)
 		case s.State == model.SlotRolledBack:
@@ -66,6 +69,11 @@ func Flags(c model.Chain, now time.Time, th Thresholds) []model.Flag {
 			add(model.Red, model.FlagCheckFailed, fmt.Sprintf("PR #%d %s failing", p.Number, checkNames(p.Failing)), p, nil)
 		case p.Review == model.ReviewChangesRequested:
 			add(model.Red, model.FlagChangesRequested, fmt.Sprintf("PR #%d changes requested", p.Number), p, nil)
+		case p.Checks == model.ChecksExpected:
+			add(model.Yellow, model.FlagCheckExpected, fmt.Sprintf("PR #%d waiting on a required check", p.Number), p, nil)
+		case p.IsDraft:
+			// A draft is not asking for review yet: no ready-to-merge, no-reviewer
+			// or stale-review flag. The red flags above still apply.
 		case p.Review == model.ReviewApproved && (p.Checks == model.ChecksPassing || p.Checks == model.ChecksNone):
 			add(model.Yellow, model.FlagReadyToMerge, fmt.Sprintf("PR #%d approved, not merged", p.Number), p, nil)
 		case p.Reviewers == 0 && p.Checks != model.ChecksPending:
@@ -205,11 +213,12 @@ func orDefault(s, d string) string {
 	return s
 }
 
-// checksFailing treats every state other than passing, pending or none as a
-// failure: GitHub also sends ERROR and EXPECTED, and neither is green.
+// checksFailing treats every state other than passing, pending, expected or
+// none as a failure: GitHub also sends ERROR, which is not green. EXPECTED (a
+// required check has not reported) is a wait, flagged yellow on its own.
 func checksFailing(s model.ChecksState) bool {
 	switch s {
-	case model.ChecksPassing, model.ChecksPending, model.ChecksNone:
+	case model.ChecksPassing, model.ChecksPending, model.ChecksExpected, model.ChecksNone:
 		return false
 	}
 	return true

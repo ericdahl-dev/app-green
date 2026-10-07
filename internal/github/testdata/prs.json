@@ -1,0 +1,87 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "Acme/App",
+      "defaultBranchRef": {"name": "main"},
+      "pullRequests": {
+        "pageInfo": {"hasNextPage": false, "endCursor": "c1"},
+        "nodes": [
+          {
+            "number": 3, "title": "ABC-1 add widget", "url": "https://github.com/Acme/App/pull/3",
+            "headRefName": "abc-1-widget", "baseRefName": "main", "state": "OPEN", "isDraft": true,
+            "createdAt": "2026-10-01T10:00:00Z", "mergedAt": null,
+            "author": {"login": "Me-Dev"},
+            "mergeCommit": {"oid": "cccc333"},
+            "reviewDecision": "REVIEW_REQUIRED",
+            "reviewRequests": {"totalCount": 1},
+            "reviews": {"totalCount": 2},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {
+              "state": "FAILURE",
+              "contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "CodeQL", "conclusion": "FAILURE", "detailsUrl": "https://example.test/scan", "checkSuite": {"workflowRun": null, "app": {"slug": "github-code-scanning"}}},
+                {"__typename": "CheckRun", "name": "rspec", "conclusion": "FAILURE", "detailsUrl": "https://example.test/run/77", "checkSuite": {"workflowRun": {"databaseId": 77}, "app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "CodeQL / Analyze (go)", "conclusion": "TIMED_OUT", "detailsUrl": "https://example.test/run/78", "checkSuite": {"workflowRun": {"databaseId": 78}, "app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "Code scanning results / Semgrep", "conclusion": "ACTION_REQUIRED", "detailsUrl": "https://example.test/semgrep", "checkSuite": {"workflowRun": null, "app": {"slug": "semgrep-app"}}},
+                {"__typename": "CheckRun", "name": "deploy-preview", "conclusion": "CANCELLED", "detailsUrl": "https://example.test/run/79", "checkSuite": {"workflowRun": {"databaseId": 79}, "app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "SUCCESS", "detailsUrl": "https://example.test/run/80", "checkSuite": {"workflowRun": {"databaseId": 80}, "app": {"slug": "github-actions"}}},
+                {"__typename": "CheckRun", "name": "optional", "conclusion": "NEUTRAL", "detailsUrl": "", "checkSuite": {"workflowRun": null, "app": {"slug": "other"}}},
+                {"__typename": "CheckRun", "name": "still-running", "conclusion": null, "detailsUrl": "", "checkSuite": {"workflowRun": {"databaseId": 81}, "app": {"slug": "github-actions"}}},
+                {"__typename": "StatusContext", "context": "ci/legacy", "state": "ERROR", "targetUrl": "https://example.test/legacy"},
+                {"__typename": "StatusContext", "context": "ci/other", "state": "FAILURE", "targetUrl": "https://example.test/other"},
+                {"__typename": "StatusContext", "context": "ci/ok", "state": "SUCCESS", "targetUrl": "https://example.test/ok"},
+                {"__typename": "StatusContext", "context": "ci/wait", "state": "PENDING", "targetUrl": null}
+              ]}
+            }}}]}
+          },
+          {
+            "number": 2, "title": "ABC-2 fix thing", "url": "https://github.com/Acme/App/pull/2",
+            "headRefName": "abc-2-fix", "baseRefName": "main", "state": "MERGED", "isDraft": false,
+            "createdAt": "2026-09-28T09:00:00Z", "mergedAt": "2026-09-29T15:30:00Z",
+            "author": {"login": "me-dev"},
+            "mergeCommit": {"oid": "bbbb222"},
+            "reviewDecision": "APPROVED",
+            "reviewRequests": {"totalCount": 0},
+            "reviews": {"totalCount": 1},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]}
+          },
+          {
+            "number": 1, "title": "ABC-3 not mine", "url": "https://github.com/Acme/App/pull/1",
+            "headRefName": "other", "baseRefName": "main", "state": "OPEN", "isDraft": false,
+            "createdAt": "2026-09-27T09:00:00Z", "mergedAt": null,
+            "author": {"login": "someone-else"},
+            "mergeCommit": null, "reviewDecision": null,
+            "reviewRequests": {"totalCount": 0}, "reviews": {"totalCount": 0},
+            "commits": {"nodes": []}
+          },
+          {
+            "number": 5, "title": "ABC-4 expected", "url": "https://github.com/Acme/App/pull/5",
+            "headRefName": "abc-4", "baseRefName": "main", "state": "OPEN", "isDraft": false,
+            "createdAt": "2026-09-26T09:00:00Z", "mergedAt": null,
+            "author": {"login": "me-dev"},
+            "mergeCommit": null, "reviewDecision": "CHANGES_REQUESTED",
+            "reviewRequests": {"totalCount": 0}, "reviews": {"totalCount": 1},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "EXPECTED", "contexts": {"nodes": []}}}}]}
+          },
+          {
+            "number": 6, "title": "ABC-5 no checks", "url": "https://github.com/Acme/App/pull/6",
+            "headRefName": "abc-5", "baseRefName": "main", "state": "OPEN", "isDraft": false,
+            "createdAt": "2026-09-25T09:00:00Z", "mergedAt": null,
+            "author": {"login": "me-dev"},
+            "mergeCommit": null, "reviewDecision": null,
+            "reviewRequests": {"totalCount": 0}, "reviews": {"totalCount": 0},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": null}}]}
+          },
+          {
+            "number": 7, "title": "ABC-6 deleted user", "url": "https://github.com/Acme/App/pull/7",
+            "headRefName": "ghost", "baseRefName": "main", "state": "OPEN", "isDraft": false,
+            "createdAt": "2026-09-24T09:00:00Z", "mergedAt": null,
+            "author": null,
+            "mergeCommit": null, "reviewDecision": null,
+            "reviewRequests": {"totalCount": 0}, "reviews": {"totalCount": 0},
+            "commits": {"nodes": []}
+          }
+        ]
+      }
+    }
+  }
+}

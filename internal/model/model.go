@@ -15,7 +15,7 @@ type Ticket struct {
 	StatusCategory StatusCategory
 	URL            string
 	Updated        time.Time
-	StatusSince    time.Time // when it entered Status; zero if unknown
+	StatusSince    time.Time // when it entered StatusCategory (Jira statuscategorychangedate); zero if unknown
 }
 
 // StatusCategory is Jira's statusCategory.key, which stays the same whatever
@@ -57,6 +57,8 @@ const (
 	ChecksPending ChecksState = "PENDING"
 	ChecksPassing ChecksState = "SUCCESS"
 	ChecksFailing ChecksState = "FAILURE"
+	// ChecksExpected: a required check has not reported yet. Not a failure.
+	ChecksExpected ChecksState = "EXPECTED"
 )
 
 type ReviewState string
@@ -86,6 +88,7 @@ type PR struct {
 	BaseRef       string
 	URL           string
 	State         PRState
+	IsDraft       bool   // a GitHub draft PR; rules skips its review flags
 	MergeSHA      string // set only when State == PRMerged
 	MergedAt      time.Time
 	OpenedAt      time.Time
@@ -110,11 +113,17 @@ type PR struct {
 // Env is one deploy environment: a stage of a pipeline in an account.
 type Env struct {
 	Account  string // config name, e.g. "prod-acct"
+	Region   string // the account's AWS region, e.g. "us-east-1"
 	Pipeline string
 	Stage    string // "Test" | "Production"
 	Order    int    // position in config; higher is further along
 	Prod     bool
 	ReadOnly bool // profile cannot approve
+	// ApprovalStage and ApprovalAction name the manual approval that gates
+	// this Env; both empty when none is configured. ApprovalStage defaults
+	// to Stage when only ApprovalAction is set.
+	ApprovalStage  string
+	ApprovalAction string
 	// Repos are the "owner/name" repos this Env deploys, compared ignoring
 	// case. Required in practice: phase 2 fills it from the pipeline's source
 	// actions. link trusts it over what history shows, and rules uses it to
@@ -134,13 +143,18 @@ const (
 	DeployFailed           DeployStatus = "Failed"
 	DeployInProgress       DeployStatus = "InProgress"
 	DeployAwaitingApproval DeployStatus = "AwaitingApproval"
+	// DeployRejected: the approval gating this Env was rejected (or timed
+	// out), so the run never reached the Env's deploy action.
+	DeployRejected DeployStatus = "Rejected"
 )
 
 // Deploy is one pipeline execution as seen from one Env's stage, as the
 // adapter builds it: Status is the stage's deploy action status, except that
 // a run paused at the stage's approval action is DeployAwaitingApproval with
-// that action's ApprovalToken. Adapters drop Abandoned and Superseded
-// executions; they never deployed anything.
+// that action's ApprovalToken, and a run whose approval was rejected is
+// DeployRejected. Adapters drop actions that never finished
+// (abandoned, or left in progress by a run that ended), but keep what a
+// superseded, stopped or canceled run did finish: it really ran.
 type Deploy struct {
 	ExecutionID string
 	Status      DeployStatus
@@ -245,7 +259,8 @@ const (
 	FlagCheckFailed
 	FlagChangesRequested
 	FlagAwaitingApproval
-	FlagPartialProd // live in some prod Envs, not all, for too long
+	FlagPartialProd   // live in some prod Envs, not all, for too long
+	FlagCheckExpected // an open PR waits on a required check that has not reported
 	FlagReadyToMerge
 	FlagStaleReview
 	FlagStatusMismatch
@@ -261,6 +276,7 @@ var flagKindNames = [...]string{
 	"changes requested",
 	"awaiting approval",
 	"partial prod",
+	"check expected",
 	"ready to merge",
 	"stale review",
 	"status mismatch",
@@ -290,6 +306,10 @@ type Chain struct {
 	Slots  []EnvSlot // one per configured Env, in Env.Order
 	Stage  Stage
 	Flags  []Flag // ordered; Flags[0] is the row's flag
+	// Stale: some input repo or env for this chain failed this poll or never
+	// loaded, so the row may be behind. StaleReason names the first one.
+	Stale       bool
+	StaleReason string
 }
 
 // Level is the chain's worst flag level, the max over all Flags. Flags[0] is

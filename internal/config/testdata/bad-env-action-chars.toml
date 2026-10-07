@@ -1,0 +1,47 @@
+[settings]
+  stale_review_after = "48h"
+  done_grace = "2h"
+  fade_after = "24h"
+  partial_prod_after = "4h"
+
+[jira]
+  site = "https://example.atlassian.net/"
+  email = "me@example.com"
+  token_env = "JIRA_API_TOKEN"
+  projects = ["ABC"]
+
+[github]
+  author = "me"
+  token_env = "GITHUB_TOKEN"       # or token_command = "gh auth token"
+  repos = ["Acme/App"]
+
+[[aws.accounts]]
+  name = "stage-acct"
+  profile = "stage"
+  region = "us-east-1"
+  read_only = false
+
+[[aws.accounts]]
+  name = "prod-acct"
+  profile = "prod-view"
+  region = "us-east-1"
+  read_only = true
+
+[[envs]]
+  account = "stage-acct"
+  pipeline = "app-pipeline"
+  stage = "Test"
+  deploy_action = "Deploy"
+  approval_action = "ApproveTest"
+  repos = ["Acme/App"]             # repos this env deploys; decides EnvSlot.Applies
+  ecs = [{ cluster = "c1", services = ["s1", "arn:aws:ecs:us-east-1:111111111111:service/c1/s2"] }]
+
+[[envs]]
+  account = "prod-acct"
+  pipeline = "app-pipeline"
+  stage = "Production"
+  deploy_action = "deploy/now"
+  approval_stage = "Test"
+  approval_action = "ApproveProd"
+  prod = true
+  repos = ["acme/app"]

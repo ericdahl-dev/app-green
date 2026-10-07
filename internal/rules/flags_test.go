@@ -32,8 +32,10 @@ func TestFlags(t *testing.T) {
 		{"an open PR with checks running and a reviewer needs nothing", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPending, Reviewers: 1, OpenedAt: now}}}, nil},
 		{"a failing check flags the PR", model.Chain{PRs: []model.PR{failing}}, []model.FlagKind{model.FlagCheckFailed}},
 		{"a failing code scan flags the PR like any check", model.Chain{PRs: []model.PR{scanning}}, []model.FlagKind{model.FlagCheckFailed}},
-		{"checks in any other state (EXPECTED, ERROR) count as failing, even when approved", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: "EXPECTED", Review: model.ReviewApproved, Reviewers: 1}}},
+		{"checks in any other state (ERROR) count as failing, even when approved", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: "ERROR", Review: model.ReviewApproved, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagCheckFailed}},
+		{"a required check that has not reported is a yellow wait, not a failure", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksExpected, Review: model.ReviewApproved, Reviewers: 1}}},
+			[]model.FlagKind{model.FlagCheckExpected}},
 		{"requested changes flag the PR", model.Chain{PRs: []model.PR{{State: model.PROpen, Review: model.ReviewChangesRequested, Reviewers: 1}}},
 			[]model.FlagKind{model.FlagChangesRequested}},
 		{"an approved, green PR that is not merged is ready to merge", model.Chain{PRs: []model.PR{{State: model.PROpen, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1}}},
@@ -206,5 +208,71 @@ func TestStrandedPRFlagTargetsItsPRAtRed(t *testing.T) {
 	}
 	if f := fs[0]; f.Kind != model.FlagStranded || f.Level != model.Red || f.PR == nil || f.PR.Number != 3 || f.Reason != "PR #3 merged into a dead branch" {
 		t.Errorf("flag %+v, want red stranded on PR #3 with reason %q", f, "PR #3 merged into a dead branch")
+	}
+}
+
+func TestDraftPRsSkipReviewFlags(t *testing.T) {
+	th := rules.Thresholds{StaleReview: 48 * time.Hour}
+	old := now.Add(-72 * time.Hour)
+	cases := []struct {
+		name string
+		pr   model.PR
+		want []model.FlagKind
+	}{
+		{"an approved, green draft is not ready to merge", model.PR{IsDraft: true, Checks: model.ChecksPassing, Review: model.ReviewApproved, Reviewers: 1, OpenedAt: old}, nil},
+		{"a draft with no reviewer is not waiting on review", model.PR{IsDraft: true, Checks: model.ChecksPassing, OpenedAt: now}, nil},
+		{"a draft past StaleReview is not stale", model.PR{IsDraft: true, Checks: model.ChecksPassing, Reviewers: 1, Review: model.ReviewRequired, OpenedAt: old}, nil},
+		{"a draft with failing checks is still flagged", model.PR{IsDraft: true, Checks: model.ChecksFailing, OpenedAt: now}, []model.FlagKind{model.FlagCheckFailed}},
+		{"a draft with changes requested is still flagged", model.PR{IsDraft: true, Checks: model.ChecksPassing, Review: model.ReviewChangesRequested, Reviewers: 1, OpenedAt: now},
+			[]model.FlagKind{model.FlagChangesRequested}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.pr.State = model.PROpen
+			got := kinds(rules.Flags(model.Chain{Stage: model.StagePROpen, PRs: []model.PR{tc.pr}}, now, th))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("flags %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckExpectedFlagIsYellowWithItsOwnReason(t *testing.T) {
+	c := model.Chain{Stage: model.StagePROpen, PRs: []model.PR{{Number: 7, State: model.PROpen, Checks: model.ChecksExpected, OpenedAt: now}}}
+	fs := rules.Flags(c, now, rules.Thresholds{})
+	if len(fs) != 1 {
+		t.Fatalf("flags %v, want one", kinds(fs))
+	}
+	if f := fs[0]; f.Kind != model.FlagCheckExpected || f.Level != model.Yellow || f.PR == nil || f.Reason != "PR #7 waiting on a required check" {
+		t.Errorf("flag %+v, want yellow check expected on PR #7", f)
+	}
+}
+
+func TestCheckExpectedSortsAfterPartialProdBeforeReadyToMerge(t *testing.T) {
+	if model.FlagCheckExpected <= model.FlagPartialProd || model.FlagCheckExpected >= model.FlagReadyToMerge {
+		t.Errorf("FlagCheckExpected = %d, want between FlagPartialProd and FlagReadyToMerge", model.FlagCheckExpected)
+	}
+}
+
+func TestRejectedApprovalFlagIsRedPipelineFailed(t *testing.T) {
+	rejected := &model.Deploy{ExecutionID: "exec3", Status: model.DeployRejected}
+	failed := &model.Deploy{ExecutionID: "exec2", Status: model.DeployFailed}
+	cases := []struct {
+		deploy *model.Deploy
+		reason string
+	}{
+		{rejected, "a Production approval rejected or expired"},
+		{failed, "a Production failed"},
+		{nil, "a Production failed"},
+	}
+	for _, tc := range cases {
+		c := model.Chain{Slots: []model.EnvSlot{{Env: prodEnv, Applies: true, State: model.SlotFailed, Deploy: tc.deploy}}}
+		fs := rules.Flags(c, now, rules.Thresholds{})
+		if len(fs) != 1 {
+			t.Fatalf("flags %v, want one pipeline-failed flag", kinds(fs))
+		}
+		if f := fs[0]; f.Level != model.Red || f.Kind != model.FlagPipelineFailed || f.Slot == nil || f.Reason != tc.reason {
+			t.Errorf("flag %+v, want red pipeline failed with reason %q", f, tc.reason)
+		}
 	}
 }

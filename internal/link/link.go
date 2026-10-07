@@ -1,14 +1,23 @@
 package link
 
-import "github.com/ericdahl-dev/app-green/internal/model"
+import (
+	"slices"
+
+	"github.com/ericdahl-dev/app-green/internal/model"
+)
 
 // Link groups prs under the tickets whose keys they name, in ticket order.
 // A PR that names one of tickets links to it, even if it also names keys
 // outside tickets. A PR that names no configured-project key is returned as
 // unlinked. A PR whose keys are all outside tickets is dropped: it is not my
 // work. Closed (unmerged) PRs are ignored everywhere, including stack walking.
-func Link(tickets []model.Ticket, prs []model.PR, projects []string) ([]model.Chain, []model.PR) {
-	prs = withEffectiveSHAs(prs)
+//
+// context holds PRs that matter only as stack bases: the PR for each base
+// branch of prs, whoever wrote it (github.Client.BasePRs). They are used for
+// stack walking alone, never linked to a ticket and never returned as
+// unlinked, so another author's PR naming my key does not join my row.
+func Link(tickets []model.Ticket, prs, context []model.PR, projects []string) ([]model.Chain, []model.PR) {
+	prs = withEffectiveSHAs(slices.Concat(prs, context))[:len(prs)]
 	byKey := map[string][]model.PR{}
 	var unlinked []model.PR
 	for _, p := range prs {
