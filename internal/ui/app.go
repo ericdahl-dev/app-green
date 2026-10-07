@@ -127,7 +127,9 @@ func (m App) key(msg tea.KeyMsg) (App, tea.Cmd) {
 			m.detail, m.dsel, m.doffset = m.snap.Chains[m.cursor].Ticket.Key, 0, 0
 		}
 	case key.Matches(msg, keys.open):
-		return m, m.open(m.target(), m.cursorTicketURL())
+		if m.items() > 0 { // with nothing selected there is nothing to say
+			return m.open(m.target(), m.cursorTicketURL())
+		}
 	}
 	return m, nil
 }
@@ -221,9 +223,10 @@ func (m App) requestRefresh() {
 type openFailedMsg struct{ err error }
 
 // open is a command that opens the first of urls that is a web page (see
-// WebPage) in the browser, reporting a failure as openFailedMsg; nil when
-// none is. Update never opens a page itself.
-func (m App) open(urls ...string) tea.Cmd {
+// WebPage) in the browser, reporting a failure as openFailedMsg. When none
+// is, there is no command and the footer says "nothing to open". Update never
+// opens a page itself.
+func (m App) open(urls ...string) (App, tea.Cmd) {
 	var u string
 	for _, c := range urls {
 		if p, ok := WebPage(c); ok {
@@ -232,10 +235,11 @@ func (m App) open(urls ...string) tea.Cmd {
 		}
 	}
 	if u == "" {
-		return nil
+		m.err = "nothing to open"
+		return m, nil
 	}
 	openURL := m.openURL
-	return func() tea.Msg {
+	return m, func() tea.Msg {
 		if err := openURL(u); err != nil {
 			return openFailedMsg{err}
 		}

@@ -61,7 +61,7 @@ func (m App) detailKey(msg tea.KeyMsg) (App, tea.Cmd) {
 		if !m.selectionVisible() {
 			sel = -1 // o acts only on a selection you can see: else the ticket
 		}
-		return m, m.open(detailTarget(c, sel), c.Ticket.URL)
+		return m.open(detailTarget(c, sel), c.Ticket.URL)
 	}
 	return m, nil
 }

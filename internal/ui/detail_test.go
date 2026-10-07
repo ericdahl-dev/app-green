@@ -488,3 +488,22 @@ func TestDetailOpenSkipsURLsWithUnsafeBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenWithNothingOpenableSaysSo(t *testing.T) {
+	snap := fxDetailSnapshot()
+	snap.Unlinked[0].URL = "" // no page, and an unlinked PR has no ticket to fall back to
+	o := &opened{}
+	m := ui.NewApp(make(chan resolver.Snapshot), make(chan struct{}, 1), o.open).WithClock(func() time.Time { return now })
+	m = update(t, update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30}), snap)
+	m = press(t, m, "j", "j", "j", "j", "o") // the unlinked PR
+	if ls := viewLines(m); !strings.Contains(ls[len(ls)-1], "nothing to open") {
+		t.Errorf("the footer says nothing opened: %q", ls[len(ls)-1])
+	}
+	if len(o.urls) != 0 {
+		t.Errorf("opened %q", o.urls)
+	}
+	// The next key clears it.
+	if ls := viewLines(press(t, m, "k")); strings.Contains(ls[len(ls)-1], "nothing to open") {
+		t.Errorf("the next key clears the message: %q", ls[len(ls)-1])
+	}
+}
