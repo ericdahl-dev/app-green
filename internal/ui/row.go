@@ -30,9 +30,9 @@ func NewLayout(chains []model.Chain, now time.Time, width int) Layout {
 	l := Layout{Width: width}
 	var title int
 	for _, c := range chains {
-		l.KeyWidth = max(l.KeyWidth, ansi.StringWidth(c.Ticket.Key))
+		l.KeyWidth = max(l.KeyWidth, ansi.StringWidth(clean(c.Ticket.Key)))
 		l.StageWidth = max(l.StageWidth, ansi.StringWidth(stageColumn(c, now)))
-		title = max(title, ansi.StringWidth(c.Ticket.Title))
+		title = max(title, ansi.StringWidth(clean(c.Ticket.Title)))
 	}
 	l.TitleWidth = max(0, min(title, (width-l.KeyWidth-l.StageWidth-gaps)/2))
 	return l
@@ -52,15 +52,15 @@ func (s Styles) Row(c model.Chain, l Layout, now time.Time) string {
 	reasonW := l.Width - (l.KeyWidth + l.StageWidth + gaps) - l.TitleWidth
 	reason := ""
 	if len(c.Flags) > 0 {
-		reason = c.Flags[0].Reason
+		reason = clean(c.Flags[0].Reason)
 	}
 	title := ""
 	if l.TitleWidth > 0 {
-		title = fit(c.Ticket.Title, l.TitleWidth) + "  "
+		title = fit(clean(c.Ticket.Title), l.TitleWidth) + "  "
 	} else {
 		reasonW += 2 // no title column, so no gap after it
 	}
-	rest := " " + fit(c.Ticket.Key, l.KeyWidth) + "  " + title +
+	rest := " " + fit(clean(c.Ticket.Key), l.KeyWidth) + "  " + title +
 		fit(stageColumn(c, now), l.StageWidth) + "  " + fit(reason, reasonW) + "  " + fit(RowAction(c).Key(), hintWidth)
 	// Too narrow for every column: cut at the right edge, before styling.
 	rest = fit(rest, l.Width-1)

@@ -59,22 +59,23 @@ const errWidth = 30
 // "jira ✗ <error>". A source that has not answered yet shows "…". With ages
 // false an OK source shows no age.
 func (s Styles) segment(st resolver.AdapterStatus, now time.Time, ages bool) string {
+	name := clean(st.Name)
 	switch {
 	case st.OK && (st.At.IsZero() || !ages):
-		return st.Name + " " + s.green.Render("✓")
+		return name + " " + s.green.Render("✓")
 	case st.OK:
-		return st.Name + " " + s.green.Render("✓") + " " + age(now.Sub(st.At))
+		return name + " " + s.green.Render("✓") + " " + age(now.Sub(st.At))
 	case st.Auth:
-		return st.Name + " " + s.red.Render("✗ token rejected")
+		return name + " " + s.red.Render("✗ token rejected")
 	case st.SSO:
-		return st.Name + " " + s.red.Render("✗ sso expired")
+		return name + " " + s.red.Render("✗ sso expired")
 	case st.Throttled && now.Before(st.RetryAt):
-		return st.Name + " " + s.yellow.Render("⏸ throttled "+age(st.RetryAt.Sub(now)))
+		return name + " " + s.yellow.Render("⏸ throttled "+age(st.RetryAt.Sub(now)))
 	case st.Throttled:
-		return st.Name + " " + s.yellow.Render("⏸ throttled")
+		return name + " " + s.yellow.Render("⏸ throttled")
 	case st.Err != "":
 		msg, _, _ := strings.Cut(st.Err, "\n")
-		return st.Name + " " + s.red.Render("✗ "+ansi.Truncate(msg, errWidth, "…"))
+		return name + " " + s.red.Render("✗ "+ansi.Truncate(clean(msg), errWidth, "…"))
 	}
-	return st.Name + " " + s.dim.Render("…")
+	return name + " " + s.dim.Render("…")
 }

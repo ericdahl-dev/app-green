@@ -101,3 +101,11 @@ func TestHeaderNarrow(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderCleansUntrustedText(t *testing.T) {
+	st := []resolver.AdapterStatus{{Name: "jira", Err: "HTTP 502 \x1b[31mBad\x1b[0m\tGateway\x1b]52;c;ZXZpbA==\x07"}}
+	want := "app-green  jira ✗ HTTP 502 Bad Gateway"
+	if got := ui.RenderHeader(st, now, 100); got != want {
+		t.Errorf("header\n got %q\nwant %q", got, want)
+	}
+}

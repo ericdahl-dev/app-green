@@ -3,6 +3,8 @@ package ui
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -39,6 +41,28 @@ func (s Styles) withDim() Styles {
 
 // DefaultStyles builds the styles on Lip Gloss's default renderer (stdout).
 func DefaultStyles() Styles { return NewStyles(lipgloss.DefaultRenderer()) }
+
+// clean makes untrusted text (anything from Jira, GitHub or AWS) safe to
+// print on one line: tabs, newlines and carriage returns become spaces,
+// escape sequences are stripped (an OSC 52 sequence could write the
+// clipboard), and any other C0 or C1 control or invalid byte is dropped.
+func clean(s string) string {
+	s = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(s)
+	s = ansi.Strip(s)
+	var b strings.Builder
+	for i, r := range s {
+		if r == utf8.RuneError {
+			if _, size := utf8.DecodeRuneInString(s[i:]); size == 1 {
+				continue // an invalid byte, such as a raw C1 CSI (0x9b)
+			}
+		}
+		if unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 // fit cuts s to w cells, ending in "…" when cut, and pads it with spaces to
 // exactly w cells. w at or below zero gives "".

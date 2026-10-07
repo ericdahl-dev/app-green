@@ -247,3 +247,29 @@ func TestRowNarrowCutsAtTheRightEdge(t *testing.T) {
 		t.Errorf("row\n got %q\nwant %q", got, want)
 	}
 }
+
+// TestRowCleansUntrustedText: titles, keys and reasons come from Jira, GitHub
+// and AWS, so tabs, newlines and escape sequences (an OSC 52 clipboard write
+// here) must not reach the terminal or break the layout.
+func TestRowCleansUntrustedText(t *testing.T) {
+	osc52 := "\x1b]52;c;ZXZpbA==\x07"
+	c := model.Chain{
+		Ticket: ticket("ABC-7\r", "Tab\there\nnew"+osc52+"line\x1b[31mred\x9b"),
+		Stage:  model.StageStarted,
+	}
+	c.Flags = []model.Flag{{Level: model.Red, Kind: model.FlagCheckFailed, Reason: "PR #3 \x1b[2Jlint\tfailing"}}
+	chains := []model.Chain{c}
+	for _, w := range []int{20, 50, 80} {
+		got := ui.RenderRow(c, ui.NewLayout(chains, now, w), now)
+		if strings.ContainsAny(got, "\x1b\t\n\r\x07") || strings.Contains(got, "\x9b") {
+			t.Errorf("width %d: control characters reach the terminal: %q", w, got)
+		}
+		if ansi.StringWidth(got) != w {
+			t.Errorf("width %d: row is %d cells: %q", w, ansi.StringWidth(got), got)
+		}
+	}
+	want := "● ABC-7   Tab here newlinered   started       PR #3 lint failing"
+	if got := row(t, c, layout); got != want {
+		t.Errorf("row\n got %q\nwant %q", got, want)
+	}
+}
