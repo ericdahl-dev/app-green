@@ -1,0 +1,51 @@
+// Package ui renders app-green's screens with Bubble Tea and Lip Gloss.
+package ui
+
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+)
+
+// Styles holds every style the screens use, bound to one renderer, so a test
+// can render through a renderer with a known terminal and environment.
+type Styles struct {
+	red    lipgloss.Style
+	yellow lipgloss.Style
+	green  lipgloss.Style
+	dim    lipgloss.Style
+	bold   lipgloss.Style
+}
+
+// NewStyles builds the styles on r. The renderer decides the color profile;
+// it honors NO_COLOR.
+func NewStyles(r *lipgloss.Renderer) Styles {
+	return Styles{
+		red:    r.NewStyle().Foreground(lipgloss.Color("1")),
+		yellow: r.NewStyle().Foreground(lipgloss.Color("3")),
+		green:  r.NewStyle().Foreground(lipgloss.Color("2")),
+		dim:    r.NewStyle().Faint(true),
+		bold:   r.NewStyle().Bold(true),
+	}
+}
+
+// withDim is s with the marker colors also faint, for a stale row.
+func (s Styles) withDim() Styles {
+	s.red = s.red.Faint(true)
+	s.yellow = s.yellow.Faint(true)
+	return s
+}
+
+// DefaultStyles builds the styles on Lip Gloss's default renderer (stdout).
+func DefaultStyles() Styles { return NewStyles(lipgloss.DefaultRenderer()) }
+
+// fit cuts s to w cells, ending in "…" when cut, and pads it with spaces to
+// exactly w cells. w at or below zero gives "".
+func fit(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	s = ansi.Truncate(s, w, "…")
+	return s + strings.Repeat(" ", w-ansi.StringWidth(s))
+}
