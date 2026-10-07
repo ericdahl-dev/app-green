@@ -73,10 +73,27 @@ func TestHeaderNarrow(t *testing.T) {
 	if got := ui.RenderHeader(st, now, 62); got != want {
 		t.Errorf("compact:\n got %q\nwant %q", got, want)
 	}
-	// Still too wide: cut at the right edge.
-	want = "app-green  jira ✓  github ✓  aws prod-a…"
-	if got := ui.RenderHeader(st, now, 40); got != want {
-		t.Errorf("cut:\n got %q\nwant %q", got, want)
+	// Still too wide: OK sources drop out, last first, so a problem is never
+	// hidden while an OK source shows.
+	for _, tt := range []struct {
+		width int
+		want  string
+	}{
+		{46, "app-green  jira ✓  aws prod-acct ✗ sso expired"},
+		{45, "app-green  aws prod-acct ✗ sso expired"},
+		{38, "app-green  aws prod-acct ✗ sso expired"},
+		// Only problems left and still too wide: cut at the right edge.
+		{30, "app-green  aws prod-acct ✗ ss…"},
+	} {
+		if got := ui.RenderHeader(st, now, tt.width); got != tt.want {
+			t.Errorf("width %d:\n got %q\nwant %q", tt.width, got, tt.want)
+		}
+	}
+	// Problems keep their order around a dropped OK source.
+	mixed := []resolver.AdapterStatus{{Name: "github", Auth: true}, ok("jira", time.Second), {Name: "aws prod-acct", SSO: true}}
+	want = "app-green  github ✗ token rejected  aws prod-acct ✗ sso expired"
+	if got := ui.RenderHeader(mixed, now, 64); got != want {
+		t.Errorf("mixed:\n got %q\nwant %q", got, want)
 	}
 	for w := 0; w <= 120; w++ {
 		if got := ui.RenderHeader(st, now, w); ansi.StringWidth(got) > w {

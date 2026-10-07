@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -20,12 +21,26 @@ func (s Styles) Header(statuses []resolver.AdapterStatus, now time.Time, width i
 	if ansi.StringWidth(line) <= width {
 		return line
 	}
-	// Too wide: OK sources drop their ages first, then the line is cut.
-	line = s.header(statuses, now, false)
-	if ansi.StringWidth(line) <= width {
-		return line
+	// Too wide: OK sources drop their ages, then drop out one at a time from
+	// the end, so a problem is never hidden while an OK source shows. Only
+	// then is the line cut.
+	shown := slices.Clone(statuses)
+	for {
+		line = s.header(shown, now, false)
+		if ansi.StringWidth(line) <= width {
+			return line
+		}
+		last := -1
+		for i, st := range shown {
+			if st.OK {
+				last = i
+			}
+		}
+		if last < 0 {
+			return ansi.Truncate(line, max(width, 0), "…")
+		}
+		shown = slices.Delete(shown, last, last+1)
 	}
-	return ansi.Truncate(line, max(width, 0), "…")
 }
 
 func (s Styles) header(statuses []resolver.AdapterStatus, now time.Time, ages bool) string {
